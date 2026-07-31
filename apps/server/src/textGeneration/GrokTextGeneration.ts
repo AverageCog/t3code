@@ -26,6 +26,7 @@ import {
 import {
   applyGrokAcpModelSelection,
   currentGrokModelIdFromSessionSetup,
+  currentGrokReasoningEffortFromSessionSetup,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../provider/acp/GrokAcpSupport.ts";
@@ -87,10 +88,14 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
           runtime,
           currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
           requestedModelId: resolvedModel,
+          currentReasoningEffort: currentGrokReasoningEffortFromSessionSetup(
+            started.sessionSetupResult,
+          ),
+          selections: modelSelection.options,
           mapError: (cause) =>
             new TextGenerationError({
               operation,
-              detail: "Failed to set Grok ACP base model for text generation.",
+              detail: "Failed to set Grok ACP model or reasoning effort for text generation.",
               cause,
             }),
         });
