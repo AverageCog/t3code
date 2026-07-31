@@ -6,9 +6,152 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
 
-import { buildInitialGrokProviderSnapshot, checkGrokProviderStatus } from "./GrokProvider.ts";
+import {
+  buildGrokCapabilitiesFromModelMeta,
+  buildGrokDiscoveredModelsFromSessionModelState,
+  buildInitialGrokProviderSnapshot,
+  checkGrokProviderStatus,
+} from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+
+describe("buildGrokCapabilitiesFromModelMeta", () => {
+  it("returns empty capabilities when reasoning is unsupported", () => {
+    expect(buildGrokCapabilitiesFromModelMeta(undefined).optionDescriptors).toEqual([]);
+    expect(
+      buildGrokCapabilitiesFromModelMeta({ supportsReasoningEffort: false }).optionDescriptors,
+    ).toEqual([]);
+  });
+
+  it("maps Grok 4.5 reasoning efforts into a select option descriptor", () => {
+    const capabilities = buildGrokCapabilitiesFromModelMeta({
+      supportsReasoningEffort: true,
+      reasoningEffort: "high",
+      reasoningEfforts: [
+        {
+          id: "high",
+          value: "high",
+          label: "High Effort",
+          default: true,
+        },
+        {
+          id: "medium",
+          value: "medium",
+          label: "Medium Effort",
+          default: false,
+        },
+        {
+          id: "low",
+          value: "low",
+          label: "Low Effort",
+          default: false,
+        },
+      ],
+    });
+
+    expect(capabilities.optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { id: "high", label: "High Effort", isDefault: true },
+          { id: "medium", label: "Medium Effort" },
+          { id: "low", label: "Low Effort" },
+        ],
+      },
+    ]);
+  });
+
+  it("prefers entry.value over entry.id for the wire token", () => {
+    const capabilities = buildGrokCapabilitiesFromModelMeta({
+      supportsReasoningEffort: true,
+      reasoningEffort: "high",
+      reasoningEfforts: [
+        {
+          id: "effort-high",
+          value: "high",
+          label: "High Effort",
+          default: true,
+        },
+        {
+          id: "effort-low",
+          value: "low",
+          label: "Low Effort",
+        },
+      ],
+    });
+
+    expect(capabilities.optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { id: "high", label: "High Effort", isDefault: true },
+          { id: "low", label: "Low Effort" },
+        ],
+      },
+    ]);
+  });
+
+  it("defaults to the first effort when no default or current is advertised", () => {
+    const capabilities = buildGrokCapabilitiesFromModelMeta({
+      supportsReasoningEffort: true,
+      reasoningEfforts: [
+        { id: "medium", value: "medium", label: "Medium Effort" },
+        { id: "low", value: "low", label: "Low Effort" },
+      ],
+    });
+
+    expect(capabilities.optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        currentValue: "medium",
+        options: [
+          { id: "medium", label: "Medium Effort", isDefault: true },
+          { id: "low", label: "Low Effort" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("buildGrokDiscoveredModelsFromSessionModelState", () => {
+  it("attaches reasoning capabilities from model meta", () => {
+    const models = buildGrokDiscoveredModelsFromSessionModelState({
+      currentModelId: "grok-4.5",
+      availableModels: [
+        {
+          modelId: "grok-4.5",
+          name: "Grok 4.5",
+          description: "SpaceXAI's new frontier model",
+          _meta: {
+            supportsReasoningEffort: true,
+            reasoningEffort: "high",
+            reasoningEfforts: [
+              { id: "high", value: "high", label: "High Effort", default: true },
+              { id: "medium", value: "medium", label: "Medium Effort", default: false },
+              { id: "low", value: "low", label: "Low Effort", default: false },
+            ],
+          },
+        },
+        {
+          modelId: "grok-build",
+          name: "Grok Build",
+        },
+      ],
+    });
+
+    expect(models.map((model) => model.slug)).toEqual(["grok-4.5", "grok-build"]);
+    expect(models[0]?.capabilities?.optionDescriptors?.[0]?.id).toBe("reasoningEffort");
+    expect(models[1]?.capabilities?.optionDescriptors ?? []).toEqual([]);
+  });
+});
 
 describe("buildInitialGrokProviderSnapshot", () => {
   it.effect("returns a disabled snapshot when settings.enabled is false", () =>

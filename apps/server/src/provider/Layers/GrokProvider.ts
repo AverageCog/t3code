@@ -18,6 +18,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -29,7 +30,11 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
-import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
+import {
+  GROK_REASONING_EFFORT_OPTION_ID,
+  makeGrokAcpRuntime,
+  resolveGrokAcpBaseModelId,
+} from "../acp/GrokAcpSupport.ts";
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
@@ -99,7 +104,99 @@ function grokModelsFromSettings(
   return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
 }
 
-function buildGrokDiscoveredModelsFromSessionModelState(
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const GROK_REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
+  none: "None",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+};
+
+function grokReasoningEffortLabel(value: string): string {
+  return GROK_REASONING_EFFORT_LABELS[value] ?? value;
+}
+
+/**
+ * Builds model capabilities from Grok ACP model `_meta`.
+ * Reasoning models advertise `supportsReasoningEffort` and a `reasoningEfforts` menu
+ * (see `GROK_REASONING_EFFORT_OPTION_ID`). Wire values prefer `entry.value` over `entry.id`.
+ */
+export function buildGrokCapabilitiesFromModelMeta(
+  meta: Readonly<Record<string, unknown>> | null | undefined,
+): ModelCapabilities {
+  if (!meta || meta.supportsReasoningEffort !== true) {
+    return EMPTY_CAPABILITIES;
+  }
+
+  const efforts = meta.reasoningEfforts;
+  if (!Array.isArray(efforts) || efforts.length === 0) {
+    return EMPTY_CAPABILITIES;
+  }
+
+  const currentEffort =
+    typeof meta.reasoningEffort === "string" && meta.reasoningEffort.trim().length > 0
+      ? meta.reasoningEffort.trim()
+      : undefined;
+
+  const parsed = efforts.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+    // Prefer the protocol/wire value; fall back to id for older menu shapes.
+    const value =
+      (typeof entry.value === "string" && entry.value.trim()) ||
+      (typeof entry.id === "string" && entry.id.trim()) ||
+      undefined;
+    if (!value) {
+      return [];
+    }
+    const label =
+      (typeof entry.label === "string" && entry.label.trim()) || grokReasoningEffortLabel(value);
+    return [
+      {
+        value,
+        label,
+        markedDefault: entry.default === true,
+      },
+    ];
+  });
+
+  if (parsed.length === 0) {
+    return EMPTY_CAPABILITIES;
+  }
+
+  // Prefer menu default, then advertised current effort, then first entry so the
+  // composer always has an explicit selection for reasoning models.
+  const preferredDefault =
+    parsed.find((option) => option.markedDefault)?.value ??
+    (currentEffort && parsed.some((option) => option.value === currentEffort)
+      ? currentEffort
+      : parsed[0]?.value);
+
+  const options = parsed.map((option) =>
+    preferredDefault !== undefined && option.value === preferredDefault
+      ? { value: option.value, label: option.label, isDefault: true as const }
+      : { value: option.value, label: option.label },
+  );
+
+  return createModelCapabilities({
+    optionDescriptors: [
+      buildSelectOptionDescriptor({
+        id: GROK_REASONING_EFFORT_OPTION_ID,
+        label: "Reasoning",
+        options,
+      }),
+    ],
+  });
+}
+
+export function buildGrokDiscoveredModelsFromSessionModelState(
   modelState: EffectAcpSchema.SessionModelState | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   if (!modelState || modelState.availableModels.length === 0) {
@@ -113,11 +210,12 @@ function buildGrokDiscoveredModelsFromSessionModelState(
         return undefined;
       }
       seen.add(slug);
+      const meta = isRecord(model._meta) ? model._meta : undefined;
       return {
         slug,
         name: model.name.trim() || slug,
         isCustom: false,
-        capabilities: EMPTY_CAPABILITIES,
+        capabilities: buildGrokCapabilitiesFromModelMeta(meta),
       };
     })
     .filter((model): model is ServerProviderModel => model !== undefined);

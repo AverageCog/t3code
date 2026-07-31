@@ -163,7 +163,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
             }),
           );
           expect(error._tag).toBe("TextGenerationError");
-          expect(error.detail).toContain("Grok ACP base model");
+          expect(error.detail).toContain("Grok ACP model or reasoning effort");
         }),
     ),
   );
