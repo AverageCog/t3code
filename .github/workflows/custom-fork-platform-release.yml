@@ -1,0 +1,114 @@
+name: Custom Fork Platform Release
+
+run-name: Custom fork ${{ inputs.version || github.event.release.tag_name }}
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Custom release version without the fork-v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: custom-fork-platform-release-${{ inputs.version || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'fork-v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            platform: win
+            target: nsis
+            arch: x64
+          - label: Linux x64
+            runner: ubuntu-latest
+            platform: linux
+            target: AppImage
+            arch: x64
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.event.release.tag_name }}
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Normalize release metadata
+        shell: bash
+        run: |
+          version="${RELEASE_VERSION#fork-v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid custom release version: $version" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=fork-v$version" >> "$GITHUB_ENV"
+
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Install ImageMagick
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y imagemagick
+          fi
+
+      - name: Build desktop update
+        shell: bash
+        run: |
+          vp run dist:desktop:artifact \
+            --platform "${{ matrix.platform }}" \
+            --target "${{ matrix.target }}" \
+            --arch "${{ matrix.arch }}" \
+            --build-version "$RELEASE_VERSION" \
+            --verbose
+
+      - name: Publish updater assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          if [[ "${{ matrix.platform }}" == "win" ]]; then
+            assets=(release/*.exe release/*.exe.blockmap release/latest.yml)
+          else
+            assets=(release/*.AppImage release/latest-linux.yml)
+          fi
+
+          if (( ${#assets[@]} == 0 )); then
+            echo "No ${{ matrix.label }} release assets were produced." >&2
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
