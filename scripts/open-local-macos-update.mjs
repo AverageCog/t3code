@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import path from "node:path";
 
 if (process.platform !== "darwin") {
@@ -12,11 +12,6 @@ if (!arch) {
 }
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
-const outputDir = path.join(repoRoot, "release", "local-macos-update");
-const desktopPackage = JSON.parse(
-  readFileSync(path.join(repoRoot, "apps", "desktop", "package.json"), "utf8"),
-);
-const dmgPath = path.join(outputDir, `T3-Code-${desktopPackage.version}-${arch}.dmg`);
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -42,6 +37,26 @@ function capture(command, args) {
     process.exit(result.status ?? 1);
   }
   return result.stdout.trim();
+}
+
+function resolveGitHubRepository(remoteUrl) {
+  const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (!match) {
+    throw new Error(`The origin remote is not a supported GitHub repository URL: ${remoteUrl}`);
+  }
+  return `${match[1]}/${match[2]}`;
+}
+
+function createReleaseVersion(now) {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  const dayAndTime = [
+    now.getUTCDate(),
+    now.getUTCHours().toString().padStart(2, "0"),
+    now.getUTCMinutes().toString().padStart(2, "0"),
+    now.getUTCSeconds().toString().padStart(2, "0"),
+  ].join("");
+  return `${year}.${month}.${dayAndTime}`;
 }
 
 if (capture("git", ["status", "--porcelain"]) !== "") {
@@ -73,17 +88,65 @@ run("git", ["merge", "--no-edit", "upstream/main"]);
 console.log("Pushing the updated history to your fork...");
 run("git", ["push", "origin", "main"]);
 
+const updateRepository = resolveGitHubRepository(capture("git", ["remote", "get-url", "origin"]));
+const releaseVersion = createReleaseVersion(new Date());
+const releaseTag = `fork-v${releaseVersion}`;
+const outputDir = path.join(repoRoot, "release", "local-macos-update", releaseVersion);
+const dmgPath = path.join(outputDir, `T3-Code-${releaseVersion}-${arch}.dmg`);
+
 console.log(`Building the ${arch} macOS installer...`);
-run(process.execPath, [
-  "scripts/build-desktop-artifact.ts",
-  "--platform",
-  "mac",
+run(
+  process.execPath,
+  [
+    "scripts/build-desktop-artifact.ts",
+    "--platform",
+    "mac",
+    "--target",
+    "dmg",
+    "--arch",
+    arch,
+    "--build-version",
+    releaseVersion,
+    "--output-dir",
+    outputDir,
+  ],
+  {
+    env: {
+      ...process.env,
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: updateRepository,
+    },
+  },
+);
+
+const releaseAssets = readdirSync(outputDir)
+  .filter(
+    (name) =>
+      name === "latest-mac.yml" ||
+      name.endsWith(".dmg") ||
+      name.endsWith(".zip") ||
+      name.endsWith(".blockmap"),
+  )
+  .map((name) => path.join(outputDir, name));
+
+if (!releaseAssets.some((assetPath) => assetPath.endsWith("latest-mac.yml"))) {
+  throw new Error("The build did not produce latest-mac.yml for the custom update feed.");
+}
+
+console.log(`Publishing ${releaseTag} to ${updateRepository}...`);
+run("gh", [
+  "release",
+  "create",
+  releaseTag,
+  ...releaseAssets,
+  "--repo",
+  updateRepository,
   "--target",
-  "dmg",
-  "--arch",
-  arch,
-  "--output-dir",
-  outputDir,
+  "main",
+  "--title",
+  `Custom T3 Code ${releaseVersion}`,
+  "--notes",
+  "Custom fork build containing the latest merged upstream changes.",
+  "--latest",
 ]);
 
 run("open", [dmgPath]);
