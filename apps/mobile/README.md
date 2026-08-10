@@ -16,9 +16,9 @@ This app has three variants:
 
 Run commands from `apps/mobile`.
 
-T3 Connect is optional and disabled in a fresh clone. Public configuration belongs in the
-repository-root `.env` or `.env.local`, not an `apps/mobile/.env` file. See
-[`../../.env.example`](../../.env.example).
+T3 Connect is enabled in a fresh clone using the production public identifiers in the
+repository-root [`.env.example`](../../.env.example). Override them through the process environment,
+`.env.local`, or `.env` to use another deployment; do not use an `apps/mobile/.env` file.
 
 ## Development
 

@@ -14,16 +14,11 @@ For the wider system diagram, see
 
 ## Application Keys
 
-T3 Connect is disabled in a fresh clone. To enable it for source builds against the production
-deployment, copy the repository-root example file:
-
-```sh
-cp .env.example .env
-```
-
-`.env.example` carries the production public identifiers (the same values baked into official
-release builds). To target a different Clerk application or relay, set the values yourself in a
-repository-root `.env` or `.env.local` file:
+T3 Connect is enabled in a fresh clone. `.env.example` supplies the production public identifiers
+as checked-in build defaults (the same values baked into official release builds), so desktop
+installers built on another machine include the cloud UI without an untracked environment file.
+To target a different Clerk application or relay, override the values in the process environment or
+in a repository-root `.env` or `.env.local` file:
 
 ```dotenv
 T3CODE_CLERK_PUBLISHABLE_KEY=<publishable key>
@@ -41,6 +36,7 @@ Configuration precedence is:
 1. Process or CI environment variables.
 2. Repository-root `.env.local`.
 3. Repository-root `.env`.
+4. Repository-root `.env.example` defaults.
 
 The Clerk publishable key, JWT template name, CLI OAuth client ID, and relay URL are public
 identifiers, not secrets.

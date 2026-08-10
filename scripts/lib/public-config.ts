@@ -30,11 +30,13 @@ export function loadRepoEnv({
   readonly baseEnv?: Environment;
   readonly repoRoot?: string;
 } = {}): Record<string, string | undefined> {
+  const defaultEnv = readEnvFile(NodePath.join(repoRoot, ".env.example"));
   const rootEnv = readEnvFile(NodePath.join(repoRoot, ".env"));
   const localEnv = readEnvFile(NodePath.join(repoRoot, ".env.local"));
-  const config = resolvePublicConfig(baseEnv, localEnv, rootEnv);
+  const config = resolvePublicConfig(baseEnv, localEnv, rootEnv, defaultEnv);
 
   return {
+    ...defaultEnv,
     ...rootEnv,
     ...localEnv,
     ...baseEnv,
