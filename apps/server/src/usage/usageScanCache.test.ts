@@ -50,6 +50,21 @@ describe("scan cache round trip", () => {
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
   });
 
+  it("round-trips grok records", () => {
+    const grok = record({
+      provider: "grok",
+      model: "grok-4.6-build",
+      reportedCostUsd: 0.224686,
+      dedupeKey: "session-a:t3-xai-prompt-1",
+    });
+    const original = new Map([
+      ["/updates.jsonl", { size: 10, mtimeMs: 100, provider: "grok" as const, records: [grok] }],
+    ]);
+
+    const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
+    expect(restored.get("/updates.jsonl")).toEqual(original.get("/updates.jsonl"));
+  });
+
   it("interns repeated model and session strings", () => {
     const encoded = encodeScanCache(
       cacheWith([["/a.jsonl", 100, [record(), record({ dedupeKey: "msg_2:" }), record()]]]),

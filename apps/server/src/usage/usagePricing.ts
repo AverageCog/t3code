@@ -2,8 +2,9 @@
  * Model rate lookup and cost arithmetic.
  *
  * Rates come from LiteLLM's `model_prices_and_context_window.json`, the same
- * table `ccusage` prices against. Everything here is pure: fetching and caching
- * the table lives in `UsageService`.
+ * table `ccusage` prices against, plus a small local fallback for models that
+ * table does not list yet. Everything here is pure: fetching and caching the
+ * table lives in `UsageService`.
  *
  * @module usagePricing
  */
@@ -38,12 +39,48 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** USD per token. xAI quotes these as USD per 1M tokens. */
+const perMillion = (usdPerMillion: number): number => usdPerMillion / 1_000_000;
+
+/**
+ * Short-context rates for models LiteLLM does not list yet.
+ *
+ * Long-context surcharges are omitted on purpose: transcripts do not say
+ * which tier served a request. LiteLLM wins when it later publishes the
+ * same name.
+ */
+const LOCAL_FALLBACK_RATES: ReadonlyArray<readonly [string, ModelRate]> = [
+  [
+    "grok-4.6",
+    {
+      inputCostPerToken: perMillion(2),
+      outputCostPerToken: perMillion(6),
+      cacheReadCostPerToken: perMillion(0.5),
+      // xAI does not publish a cache-write rate; treat writes as input.
+      cacheCreationCostPerToken: perMillion(2),
+    },
+  ],
+];
+
+/**
+ * Fills in models LiteLLM does not list yet. Existing keys win, so a later
+ * LiteLLM row for the same name replaces the fallback automatically.
+ */
+export function withLocalFallbackRates(table: RateTable): RateTable {
+  const next = new Map(table);
+  for (const [name, rate] of LOCAL_FALLBACK_RATES) {
+    if (!next.has(name)) next.set(name, rate);
+  }
+  return next;
+}
+
 /**
  * Projects the LiteLLM document into a rate table.
  *
  * Entries without both an input and an output rate are dropped: a half-priced
  * model would silently under-report cost, which is worse than reporting the
- * model as unpriced.
+ * model as unpriced. Local fallbacks are applied separately so an empty
+ * document still means "LiteLLM gave us nothing".
  */
 export function parseRateTable(document: unknown): RateTable {
   const table = new Map<string, ModelRate>();
@@ -101,7 +138,15 @@ const UNPRICEABLE_MODELS = new Set([
 export function lookupRate(table: RateTable, model: string): ModelRate | null {
   const normalized = normalizeModelName(model);
   if (normalized.length === 0 || UNPRICEABLE_MODELS.has(normalized)) return null;
-  return table.get(normalized) ?? null;
+  const exact = table.get(normalized);
+  if (exact !== undefined) return exact;
+  // Grok CLI attributes usage to `*-build` variants (e.g. `grok-4.5-build`)
+  // that LiteLLM publishes without the suffix.
+  if (normalized.endsWith("-build")) {
+    const base = normalized.slice(0, -"-build".length);
+    if (base.length > 0) return table.get(base) ?? null;
+  }
+  return null;
 }
 
 export interface PricedUsage {

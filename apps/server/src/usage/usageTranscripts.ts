@@ -68,7 +68,9 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  return provider === "claude" ? line.includes('"usage"') : line.includes('"token_count"');
+  if (provider === "claude") return line.includes('"usage"');
+  if (provider === "codex") return line.includes('"token_count"');
+  return line.includes('"turn_completed"');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -294,6 +296,143 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     // Events surviving the fork-copy suppression above are unique to this
     // rollout, so they need no global dedup.
     dedupeKey: null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grok                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Grok reports turn cost as integer ticks. `10^10` ticks = $1.00, verified
+ * against published Grok 4.6 short-context rates on real `turn_completed`
+ * records.
+ */
+export const GROK_COST_USD_TICKS_PER_DOLLAR = 10_000_000_000;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function parseGrokTimestampMs(
+  record: Record<string, unknown>,
+  meta: Record<string, unknown> | null,
+): number | null {
+  const agentTimestampMs = meta === null ? null : finiteNumber(meta["agentTimestampMs"]);
+  if (agentTimestampMs !== null && agentTimestampMs > 0) return Math.trunc(agentTimestampMs);
+
+  const timestamp = record["timestamp"];
+  if (typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0) {
+    // Seconds vs milliseconds: 1e12 ms is 2001-09-09.
+    return timestamp < 1e12 ? Math.trunc(timestamp * 1000) : Math.trunc(timestamp);
+  }
+  return parseTimestampMs(timestamp);
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseGrokReportedCostUsd(usage: Record<string, unknown>): number | null {
+  const ticks = finiteNumber(usage["costUsdTicks"]);
+  if (ticks === null || ticks < 0) return null;
+  return ticks / GROK_COST_USD_TICKS_PER_DOLLAR;
+}
+
+function parseGrokTotals(usage: Record<string, unknown>): UsageTokenTotals {
+  const inputTokens = int(usage["inputTokens"]);
+  const cachedInputTokens = int(usage["cachedReadTokens"]);
+  const cacheCreationTokens = int(usage["cacheCreationTokens"] ?? usage["cachedWriteTokens"]);
+  const outputTokens = int(usage["outputTokens"]);
+  return {
+    // Grok reports `inputTokens` inclusive of cached reads, same as Codex.
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    reasoningTokens: Math.min(
+      outputTokens,
+      int(usage["reasoningTokens"] ?? usage["thoughtTokens"]),
+    ),
+  };
+}
+
+function primaryGrokModel(usage: Record<string, unknown>): string {
+  const modelUsage = asRecord(usage["modelUsage"]);
+  if (modelUsage === null) return "";
+  const models = Object.keys(modelUsage);
+  if (models.length === 0) return "";
+  if (models.length === 1) return models[0] ?? "";
+
+  let bestModel = models[0] ?? "";
+  let bestTokens = -1;
+  for (const model of models) {
+    const part = asRecord(modelUsage[model]);
+    const tokens = part === null ? 0 : int(part["totalTokens"]);
+    if (tokens > bestTokens) {
+      bestModel = model;
+      bestTokens = tokens;
+    }
+  }
+  return bestModel;
+}
+
+/**
+ * Parses one line of a Grok `updates.jsonl` transcript.
+ *
+ * Billed usage lives on `_x.ai/session/update` (and occasionally
+ * `session/update`) `turn_completed` events. Cancelled turns often omit
+ * `usage` and are skipped. Cost prefers the CLI's `costUsdTicks` so
+ * subscription and long-context billing match what Grok actually charged.
+ */
+export function parseGrokLine(line: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const record = asRecord(parsed);
+  if (record === null) return null;
+
+  const params = asRecord(record["params"]);
+  if (params === null) return null;
+  const update = asRecord(params["update"]);
+  if (update === null || update["sessionUpdate"] !== "turn_completed") return null;
+
+  const usage = asRecord(update["usage"]);
+  if (usage === null) return null;
+
+  const meta = asRecord(params["_meta"]) ?? asRecord(record["_meta"]);
+  const timestampMs = parseGrokTimestampMs(record, meta);
+  if (timestampMs === null) return null;
+
+  const model = primaryGrokModel(usage);
+  const modelUsage = asRecord(usage["modelUsage"]);
+  const pricedUsage =
+    model.length > 0 && modelUsage !== null ? (asRecord(modelUsage[model]) ?? usage) : usage;
+  const totals = parseGrokTotals(pricedUsage);
+  const reportedCostUsd = parseGrokReportedCostUsd(pricedUsage) ?? parseGrokReportedCostUsd(usage);
+  if (totalTokens(totals) === 0 && reportedCostUsd === null) return null;
+
+  const sessionId = typeof params["sessionId"] === "string" ? params["sessionId"] : "";
+  const promptId = typeof update["prompt_id"] === "string" ? update["prompt_id"] : "";
+  const eventId = meta !== null && typeof meta["eventId"] === "string" ? meta["eventId"] : "";
+  const dedupeKey =
+    sessionId.length > 0 && promptId.length > 0
+      ? `${sessionId}:${promptId}`
+      : eventId.length > 0
+        ? eventId
+        : null;
+
+  return {
+    provider: "grok",
+    timestampMs,
+    model,
+    sessionId,
+    totals,
+    reportedCostUsd,
+    dedupeKey,
   };
 }
 

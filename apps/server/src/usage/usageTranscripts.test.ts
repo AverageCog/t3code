@@ -1,9 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  GROK_COST_USD_TICKS_PER_DOLLAR,
   initialCodexScanState,
   parseClaudeLine,
   parseCodexLine,
+  parseGrokLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -233,6 +235,101 @@ describe("parseCodexLine", () => {
       );
       expect(record).not.toBeNull();
     });
+  });
+});
+
+describe("parseGrokLine", () => {
+  const grokLine = (overrides?: {
+    usage?: Record<string, unknown> | null;
+    timestamp?: number;
+    agentTimestampMs?: number;
+    promptId?: string;
+    sessionId?: string;
+    stopReason?: string;
+  }) =>
+    JSON.stringify({
+      timestamp: overrides?.timestamp ?? 1_786_568_351,
+      method: "_x.ai/session/update",
+      params: {
+        sessionId: overrides?.sessionId ?? "019ff7c0-2004-7570-9076-153e2cd1d3cc",
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: overrides?.promptId ?? "t3-xai-prompt-2",
+          stop_reason: overrides?.stopReason ?? "end_turn",
+          ...(overrides && "usage" in overrides && overrides.usage === null
+            ? {}
+            : {
+                usage: overrides?.usage ?? {
+                  inputTokens: 219_131,
+                  outputTokens: 500,
+                  totalTokens: 219_631,
+                  cachedReadTokens: 144_384,
+                  cacheCreationTokens: 0,
+                  reasoningTokens: 352,
+                  costUsdTicks: 2_246_860_000,
+                  modelUsage: {
+                    "grok-4.6-build": {
+                      inputTokens: 219_131,
+                      outputTokens: 500,
+                      totalTokens: 219_631,
+                      cachedReadTokens: 144_384,
+                      cacheCreationTokens: 0,
+                      reasoningTokens: 352,
+                      costUsdTicks: 2_246_860_000,
+                    },
+                  },
+                },
+              }),
+        },
+        _meta: {
+          eventId: "019ff7c0-2004-7570-9076-153e2cd1d3cc-1395",
+          agentTimestampMs: overrides?.agentTimestampMs ?? 1_786_568_351_738,
+        },
+      },
+    });
+
+  it("extracts tokens, model, and provider-reported cost", () => {
+    const record = parseGrokLine(grokLine());
+
+    expect(record).not.toBeNull();
+    expect(record?.provider).toBe("grok");
+    expect(record?.model).toBe("grok-4.6-build");
+    expect(record?.sessionId).toBe("019ff7c0-2004-7570-9076-153e2cd1d3cc");
+    expect(record?.timestampMs).toBe(1_786_568_351_738);
+    expect(record?.totals).toEqual({
+      uncachedInputTokens: 219_131 - 144_384,
+      cachedInputTokens: 144_384,
+      cacheCreationTokens: 0,
+      outputTokens: 500,
+      reasoningTokens: 352,
+    });
+    expect(record?.reportedCostUsd).toBeCloseTo(2_246_860_000 / GROK_COST_USD_TICKS_PER_DOLLAR, 10);
+    expect(record?.dedupeKey).toBe("019ff7c0-2004-7570-9076-153e2cd1d3cc:t3-xai-prompt-2");
+  });
+
+  it("skips cancelled turns that carry no usage", () => {
+    expect(parseGrokLine(grokLine({ usage: null, stopReason: "cancelled" }))).toBeNull();
+  });
+
+  it("ignores records that are not turn completions", () => {
+    expect(
+      parseGrokLine(
+        JSON.stringify({
+          timestamp: 1_786_568_351,
+          method: "session/update",
+          params: {
+            sessionId: "s1",
+            update: { sessionUpdate: "agent_message_chunk" },
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(parseGrokLine("not json")).toBeNull();
+  });
+
+  it("falls back to the unix-second timestamp when agent time is missing", () => {
+    const record = parseGrokLine(grokLine({ agentTimestampMs: 0, timestamp: 1_786_568_351 }));
+    expect(record?.timestampMs).toBe(1_786_568_351_000);
   });
 });
 
