@@ -188,6 +188,110 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
     }),
   );
 
+  it.effect("projects ACP usage_update notifications into thread token usage", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-mock-usage-update");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_EMIT_USAGE_UPDATE: "1",
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const tokenUsage = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "thread.token-usage.updated"
+              ? Deferred.succeed(tokenUsage, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "hello grok",
+        attachments: [],
+      });
+
+      yield* Deferred.await(tokenUsage);
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.isDefined(usageEvent);
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.equal(usageEvent.payload.usage.usedTokens, 20_629);
+        assert.equal(usageEvent.payload.usage.maxTokens, 500_000);
+        assert.equal(usageEvent.payload.usage.compactsAutomatically, true);
+      }
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("projects Grok turn_completed usage into context occupancy", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("grok-mock-turn-completed-usage");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_EMIT_XAI_TURN_COMPLETED: "1",
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+
+      const runtimeEvents: ProviderRuntimeEvent[] = [];
+      const tokenUsage = yield* Deferred.make<void>();
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          runtimeEvents.push(event);
+        }).pipe(
+          Effect.andThen(
+            event.type === "thread.token-usage.updated"
+              ? Deferred.succeed(tokenUsage, undefined)
+              : Effect.void,
+          ),
+        ),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "hello grok",
+        attachments: [],
+      });
+
+      yield* Deferred.await(tokenUsage);
+      const usageEvent = runtimeEvents.find((event) => event.type === "thread.token-usage.updated");
+      assert.isDefined(usageEvent);
+      if (usageEvent?.type === "thread.token-usage.updated") {
+        assert.equal(usageEvent.payload.usage.usedTokens, Math.round(61_887 / 3));
+        assert.equal(usageEvent.payload.usage.maxTokens, 500_000);
+        assert.equal(usageEvent.payload.usage.totalProcessedTokens, 62_387);
+      }
+
+      yield* Fiber.interrupt(runtimeEventsFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("closes the ACP child process when a session stops", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("grok-stop-session-close");

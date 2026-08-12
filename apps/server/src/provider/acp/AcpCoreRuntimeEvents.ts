@@ -8,6 +8,7 @@ import {
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
   type ThreadId,
+  type ThreadTokenUsageSnapshot,
   type ToolLifecycleItemType,
   type TurnId,
 } from "@t3tools/contracts";
@@ -238,5 +239,54 @@ export function makeAcpContentDeltaEvent(input: {
       method: "session/update",
       payload: input.rawPayload,
     },
+  };
+}
+
+export function snapshotFromAcpUsageUpdate(input: {
+  readonly used: number;
+  readonly size: number;
+}): ThreadTokenUsageSnapshot | undefined {
+  if (!Number.isFinite(input.used) || input.used <= 0) {
+    return undefined;
+  }
+  const usedTokens = Math.trunc(input.used);
+  const maxTokens =
+    Number.isFinite(input.size) && input.size > 0 ? Math.trunc(input.size) : undefined;
+  return {
+    usedTokens: maxTokens !== undefined ? Math.min(usedTokens, maxTokens) : usedTokens,
+    lastUsedTokens: maxTokens !== undefined ? Math.min(usedTokens, maxTokens) : usedTokens,
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    compactsAutomatically: true,
+  };
+}
+
+export function makeAcpTokenUsageEvent(input: {
+  readonly stamp: AcpEventStamp;
+  readonly provider: ProviderDriverKind;
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly usage: ThreadTokenUsageSnapshot;
+  readonly source?: AcpAdapterRawSource;
+  readonly method?: string;
+  readonly rawPayload?: unknown;
+}): ProviderRuntimeEvent {
+  return {
+    type: "thread.token-usage.updated",
+    ...input.stamp,
+    provider: input.provider,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    payload: {
+      usage: input.usage,
+    },
+    ...(input.rawPayload !== undefined
+      ? {
+          raw: {
+            source: input.source ?? "acp.jsonrpc",
+            method: input.method ?? "session/update",
+            payload: input.rawPayload,
+          },
+        }
+      : {}),
   };
 }

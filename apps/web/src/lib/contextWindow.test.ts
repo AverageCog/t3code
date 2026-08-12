@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EventId, type OrchestrationThreadActivity, TurnId } from "@t3tools/contracts";
 
-import { deriveLatestContextWindowSnapshot, formatContextWindowTokens } from "./contextWindow";
+import {
+  deriveLatestContextWindowSnapshot,
+  formatContextWindowTokens,
+  formatProviderDisplayName,
+} from "./contextWindow";
 
 function makeActivity(id: string, kind: string, payload: unknown): OrchestrationThreadActivity {
   return {
@@ -59,6 +63,10 @@ describe("contextWindow", () => {
       usedPercentage: 0,
       remainingPercentage: 100,
     });
+  });
+
+  it("names Grok in the context-window popover", () => {
+    expect(formatProviderDisplayName("grok")).toBe("Grok");
   });
 
   it("formats compact token counts", () => {

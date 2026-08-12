@@ -7,7 +7,9 @@ import {
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
+  makeAcpTokenUsageEvent,
   makeAcpToolCallEvent,
+  snapshotFromAcpUsageUpdate,
 } from "./AcpCoreRuntimeEvents.ts";
 
 describe("AcpCoreRuntimeEvents", () => {
@@ -189,6 +191,45 @@ describe("AcpCoreRuntimeEvents", () => {
       payload: {
         itemType: "assistant_message",
         status: "inProgress",
+      },
+    });
+  });
+
+  it("maps ACP usage_update fields onto a thread snapshot", () => {
+    expect(snapshotFromAcpUsageUpdate({ used: 20_000, size: 500_000 })).toMatchObject({
+      usedTokens: 20_000,
+      maxTokens: 500_000,
+      lastUsedTokens: 20_000,
+      compactsAutomatically: true,
+    });
+    expect(snapshotFromAcpUsageUpdate({ used: 0, size: 500_000 })).toBeUndefined();
+  });
+
+  it("maps ACP usage updates to thread token-usage events", () => {
+    const stamp = { eventId: "event-1" as never, createdAt: "2026-03-27T00:00:00.000Z" };
+
+    expect(
+      makeAcpTokenUsageEvent({
+        stamp,
+        provider: ProviderDriverKind.make("grok"),
+        threadId: "thread-1" as never,
+        turnId: TurnId.make("turn-1"),
+        usage: {
+          usedTokens: 20_629,
+          maxTokens: 500_000,
+          lastUsedTokens: 20_629,
+          compactsAutomatically: true,
+        },
+        rawPayload: { sessionUpdate: "usage_update", used: 20_629, size: 500_000 },
+      }),
+    ).toMatchObject({
+      type: "thread.token-usage.updated",
+      payload: {
+        usage: {
+          usedTokens: 20_629,
+          maxTokens: 500_000,
+          compactsAutomatically: true,
+        },
       },
     });
   });

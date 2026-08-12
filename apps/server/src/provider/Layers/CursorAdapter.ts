@@ -57,7 +57,9 @@ import {
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
+  makeAcpTokenUsageEvent,
   makeAcpToolCallEvent,
+  snapshotFromAcpUsageUpdate,
 } from "../acp/AcpCoreRuntimeEvents.ts";
 import {
   type AcpSessionMode,
@@ -867,6 +869,32 @@ export function makeCursorAdapter(
                       }),
                     );
                     return;
+                  case "UsageUpdated": {
+                    const usage = snapshotFromAcpUsageUpdate({
+                      used: event.used,
+                      size: event.size,
+                    });
+                    if (!usage) {
+                      return;
+                    }
+                    yield* logNative(
+                      ctx.threadId,
+                      "session/update",
+                      event.rawPayload,
+                      "acp.jsonrpc",
+                    );
+                    yield* offerRuntimeEvent(
+                      makeAcpTokenUsageEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                        turnId: ctx.activeTurnId,
+                        usage,
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
+                    return;
+                  }
                 }
               }),
             ),

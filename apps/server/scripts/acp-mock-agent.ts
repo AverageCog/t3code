@@ -19,6 +19,8 @@ const emitInterleavedAssistantToolCalls =
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitXAiAskUserQuestion = process.env.T3_ACP_EMIT_XAI_ASK_USER_QUESTION === "1";
+const emitUsageUpdate = process.env.T3_ACP_EMIT_USAGE_UPDATE === "1";
+const emitXAiTurnCompleted = process.env.T3_ACP_EMIT_XAI_TURN_COMPLETED === "1";
 const emitXAiPromptCompleteThenHang = process.env.T3_ACP_EMIT_XAI_PROMPT_COMPLETE_THEN_HANG === "1";
 const emitForeignSessionUpdates = process.env.T3_ACP_EMIT_FOREIGN_SESSION_UPDATES === "1";
 const hangPromptForever = process.env.T3_ACP_HANG_PROMPT_FOREVER === "1";
@@ -872,6 +874,36 @@ const program = Effect.gen(function* () {
           content: { type: "text", text: promptResponseText ?? "hello from mock" },
         },
       });
+
+      if (emitUsageUpdate) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "usage_update",
+            used: 20_629,
+            size: 500_000,
+          },
+        });
+      }
+
+      if (emitXAiTurnCompleted) {
+        writeJsonRpcNotification("_x.ai/session/update", {
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "turn_completed",
+            prompt_id: promptIdFromRequestMeta(request) ?? "mock-xai-prompt-1",
+            stop_reason: "end_turn",
+            usage: {
+              inputTokens: 61_887,
+              outputTokens: 500,
+              totalTokens: 62_387,
+              cachedReadTokens: 40_000,
+              reasoningTokens: 120,
+              modelCalls: 3,
+            },
+          },
+        });
+      }
 
       return { stopReason: "end_turn" };
     }),
