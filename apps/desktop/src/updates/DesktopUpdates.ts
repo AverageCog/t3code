@@ -23,12 +23,20 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
+import {
+  inspectMacAppSignature,
+  resolveDownloadedMacUpdateZip,
+  resolveMacAppBundlePath,
+  resolveMacUpdaterCacheDir,
+  spawnUnsignedMacInstaller,
+} from "./unsignedMacInstall.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -479,6 +487,39 @@ export const make = Effect.gen(function* () {
         { concurrency: "unbounded" },
       );
       yield* electronWindow.destroyAll;
+
+      // Unsigned / ad-hoc Mac builds cannot use Squirrel.Mac. It quits the
+      // app without swapping the bundle, so Restart to update never relaunches
+      // and the old version keeps offering the same update.
+      if (environment.platform === "darwin") {
+        const electronApp = yield* Effect.serviceOption(ElectronApp.ElectronApp);
+        const bundlePath = resolveMacAppBundlePath(environment.appPath);
+        if (
+          Option.isSome(electronApp) &&
+          bundlePath &&
+          inspectMacAppSignature(bundlePath) === "adhoc"
+        ) {
+          const appUpdateYml = Option.getOrUndefined(yield* Ref.get(appUpdateYmlConfigRef));
+          const cacheDir = resolveMacUpdaterCacheDir(
+            environment.homeDirectory,
+            appUpdateYml?.updaterCacheDirName ?? "t3code-updater",
+          );
+          const zipPath = resolveDownloadedMacUpdateZip(cacheDir);
+          if (zipPath) {
+            yield* logUpdaterInfo("installing unsigned mac update by replacing the app bundle", {
+              bundlePath,
+              zipPath,
+            });
+            spawnUnsignedMacInstaller({ zipPath, destAppPath: bundlePath });
+            yield* electronApp.value.quit;
+            return { accepted: true, completed: false };
+          }
+          yield* logUpdaterWarning("unsigned mac update zip was not in the updater cache", {
+            cacheDir,
+          });
+        }
+      }
+
       yield* electronUpdater.quitAndInstall({
         isSilent: true,
         isForceRunAfter: true,
