@@ -3,8 +3,58 @@ import { assert, it } from "@effect/vitest";
 import {
   applyPreferredCodexDefaultModel,
   isLegacyCodexModel,
+  mapCodexSubscriptionUsage,
   mapCodexModelCapabilities,
 } from "./CodexProvider.ts";
+
+it("maps ChatGPT primary and weekly subscription windows", () => {
+  assert.deepStrictEqual(
+    mapCodexSubscriptionUsage({
+      account: {
+        account: { type: "chatgpt", email: "dev@example.com", planType: "plus" },
+        requiresOpenaiAuth: false,
+      },
+      rateLimits: {
+        rateLimits: {
+          planType: "plus",
+          primary: { usedPercent: 35, windowDurationMins: 300, resetsAt: 1_775_798_400 },
+          secondary: {
+            usedPercent: 72,
+            windowDurationMins: 10_080,
+            resetsAt: 1_776_388_800,
+          },
+        },
+      },
+    }),
+    {
+      provider: "chatgpt",
+      plan: "plus",
+      windows: [
+        {
+          kind: "primary",
+          usedPercent: 35,
+          windowDurationMinutes: 300,
+          resetsAt: "2026-04-10T05:20:00.000Z",
+        },
+        {
+          kind: "secondary",
+          usedPercent: 72,
+          windowDurationMinutes: 10_080,
+          resetsAt: "2026-04-17T01:20:00.000Z",
+        },
+      ],
+    },
+  );
+});
+
+it("omits subscription usage for non-ChatGPT Codex authentication", () => {
+  assert.isUndefined(
+    mapCodexSubscriptionUsage({
+      account: { account: { type: "apiKey" }, requiresOpenaiAuth: false },
+      rateLimits: { rateLimits: { primary: { usedPercent: 10 } } },
+    }),
+  );
+});
 
 it("keeps only the GPT-5.6 Codex family out of legacy models", () => {
   assert.deepStrictEqual(

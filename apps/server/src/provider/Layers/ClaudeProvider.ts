@@ -2,6 +2,7 @@ import {
   type ClaudeSettings,
   type ModelCapabilities,
   type ModelSelection,
+  type ProviderSubscriptionUsage,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   createModelCapabilities,
@@ -573,7 +575,78 @@ function claudeAuthMetadata(input: {
 function apiProviderAuthMetadata(
   apiProvider: string | undefined,
 ): { readonly type: string; readonly label: string } | undefined {
-  return apiProvider === "bedrock" ? { type: "bedrock", label: "Amazon Bedrock" } : undefined;
+  if (!apiProvider || apiProvider === "firstParty") return undefined;
+  const label =
+    {
+      bedrock: "Amazon Bedrock",
+      vertex: "Google Vertex AI",
+      foundry: "Microsoft Foundry",
+      anthropicAws: "Anthropic on AWS",
+      mantle: "Mantle",
+      gateway: "Enterprise Gateway",
+    }[apiProvider] ?? toTitleCaseWords(apiProvider);
+  return { type: apiProvider, label };
+}
+
+const ClaudeSubscriptionLimitWindow = Schema.Struct({
+  utilization: Schema.NullOr(Schema.Number),
+  resets_at: Schema.NullOr(Schema.String),
+});
+
+const ClaudeSubscriptionUsageResponse = Schema.Struct({
+  subscription_type: Schema.NullOr(Schema.String),
+  rate_limits_available: Schema.Boolean,
+  rate_limits: Schema.NullOr(
+    Schema.Struct({
+      five_hour: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+      seven_day: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+    }),
+  ),
+});
+
+const decodeClaudeSubscriptionUsageResponse = Schema.decodeUnknownOption(
+  ClaudeSubscriptionUsageResponse,
+);
+
+function claudeSubscriptionWindow(
+  kind: "primary" | "weekly",
+  windowDurationMinutes: number,
+  window: typeof ClaudeSubscriptionLimitWindow.Type | null | undefined,
+): ProviderSubscriptionUsage["windows"][number] | undefined {
+  if (!window) return undefined;
+  if (window.utilization === null) return undefined;
+  const resetsAt =
+    window.resets_at !== null
+      ? Option.match(DateTime.make(window.resets_at), {
+          onNone: () => null,
+          onSome: DateTime.formatIso,
+        })
+      : null;
+
+  return {
+    kind,
+    usedPercent: Math.min(100, Math.max(0, window.utilization)),
+    windowDurationMinutes,
+    resetsAt,
+  };
+}
+
+/** Maps Claude Code's structured `/usage` response onto the shared quota shape. */
+export function mapClaudeSubscriptionUsage(input: unknown): ProviderSubscriptionUsage | undefined {
+  const decoded = decodeClaudeSubscriptionUsageResponse(input);
+  if (Option.isNone(decoded) || !decoded.value.rate_limits_available) return undefined;
+
+  const response = decoded.value;
+  const rateLimits = response.rate_limits;
+  const windows = rateLimits
+    ? [
+        claudeSubscriptionWindow("primary", 300, rateLimits.five_hour),
+        claudeSubscriptionWindow("weekly", 10_080, rateLimits.seven_day),
+      ].filter((window) => window !== undefined)
+    : [];
+  const plan = response.subscription_type?.trim() || null;
+
+  return { provider: "claude", plan, windows };
 }
 
 // ── SDK capability probe ────────────────────────────────────────────
@@ -642,6 +715,7 @@ type ClaudeCapabilitiesProbe = {
    */
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly subscriptionUsage?: ProviderSubscriptionUsage;
 };
 
 function parseClaudeInitializationCommands(
@@ -765,12 +839,16 @@ const probeClaudeCapabilities = (
             readonly apiProvider?: string;
           }
         | undefined;
+      const subscriptionUsage = mapClaudeSubscriptionUsage(
+        await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET().catch(() => undefined),
+      );
       return {
         email: account?.email,
         subscriptionType: account?.subscriptionType,
         tokenSource: account?.tokenSource,
         apiProvider: account?.apiProvider,
         slashCommands: parseClaudeInitializationCommands(init.commands),
+        ...(subscriptionUsage ? { subscriptionUsage } : {}),
       } satisfies ClaudeCapabilitiesProbe;
     });
   }).pipe(
@@ -960,6 +1038,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     models,
     slashCommands: dedupedSlashCommands,
     skills,
+    ...(capabilities.subscriptionUsage
+      ? { subscriptionUsage: capabilities.subscriptionUsage }
+      : {}),
     probe: {
       installed: true,
       version: parsedVersion,

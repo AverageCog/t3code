@@ -1,4 +1,14 @@
 import { useNavigation } from "@react-navigation/native";
+import {
+  expectedSubscriptionProvider,
+  scrambleSubscriptionEmail,
+  type SubscriptionUsageStatus,
+} from "@t3tools/client-runtime/state/subscription-usage";
+import type {
+  ServerProvider,
+  SubscriptionUsageProvider,
+  SubscriptionUsageWindow,
+} from "@t3tools/contracts";
 import type { DailyTotals, MergedUsage } from "@t3tools/shared/usageMerge";
 import {
   enumerateDays,
@@ -18,7 +28,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { useSubscriptionUsage, useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { UsageDailyChart } from "./UsageDailyChart";
 import type { UsageChartMetric } from "./usageChartData";
@@ -31,19 +41,34 @@ const WINDOW_OPTIONS = [
   { days: 90, label: "90 days" },
 ] as const;
 
+const VIEW_OPTIONS: readonly {
+  readonly value: number | "subscriptions";
+  readonly label: string;
+}[] = [
+  ...WINDOW_OPTIONS.map((option) => ({ value: option.days, label: option.label })),
+  {
+    value: "subscriptions",
+    label: "Subscriptions",
+  },
+];
+
 const CHART_HEIGHT = 180;
 
 export function UsageRouteScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
+  const [activeView, setActiveView] = useState<"history" | "subscriptions">("history");
   const [windowSelection, setWindowSelection] = useState(() => ({
     days: 30,
     window: makeWindow(30),
   }));
+  const [subscriptionWindow, setSubscriptionWindow] = useState(() => makeWindow(30));
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
   const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
+  const subscriptionHistory = useUsage(subscriptionWindow);
+  const subscriptions = useSubscriptionUsage();
 
   const days = useMemo(
     () => enumerateDays(window.sinceDay, window.untilDay),
@@ -72,8 +97,9 @@ export function UsageRouteScreen() {
   // The pull spinner tracks re-scans of environments that have answered
   // before. The initial scan renders its own placeholder, and an unreachable
   // environment stays pending forever — neither may pin the spinner on.
-  const refreshing = environments.some((entry) => entry.isPending && entry.summary !== null);
+  const historyRefreshing = environments.some((entry) => entry.isPending && entry.summary !== null);
   const selectWindow = (days: number) => {
+    setActiveView("history");
     setWindowSelection({
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
@@ -92,6 +118,22 @@ export function UsageRouteScreen() {
       setWindowSelection({ days: windowDays, window: nextWindow });
     }
   };
+  const refreshView = () => {
+    if (activeView === "subscriptions") {
+      void subscriptions.refresh();
+      const nextWindow = makeWindow(30);
+      if (
+        nextWindow.sinceDay === subscriptionWindow.sinceDay &&
+        nextWindow.untilDay === subscriptionWindow.untilDay
+      ) {
+        subscriptionHistory.refresh();
+      } else {
+        setSubscriptionWindow(nextWindow);
+      }
+      return;
+    }
+    refreshWindow();
+  };
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
@@ -107,43 +149,391 @@ export function UsageRouteScreen() {
         className="flex-1"
         contentContainerClassName="gap-6 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshWindow} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={
+              activeView === "subscriptions" ? subscriptions.isRefreshing : historyRefreshing
+            }
+            onRefresh={refreshView}
+          />
+        }
       >
         <SegmentedControl
-          options={WINDOW_OPTIONS.map((option) => ({ value: option.days, label: option.label }))}
-          selected={windowDays}
-          onSelect={selectWindow}
+          options={VIEW_OPTIONS}
+          selected={activeView === "subscriptions" ? "subscriptions" : windowDays}
+          onSelect={(selection) => {
+            if (selection === "subscriptions") {
+              setActiveView("subscriptions");
+            } else {
+              selectWindow(selection);
+            }
+          }}
         />
 
-        <UsageCoverageNotice environments={environments} merged={merged} isPartial={isPartial} />
-
-        {isPending ? (
-          <Text className="py-16 text-center text-base text-foreground-muted">
-            Scanning provider transcripts…
-          </Text>
-        ) : environments.length === 0 ? (
-          <Text className="py-16 text-center text-base text-foreground-muted">
-            Connect an environment to see usage.
-          </Text>
+        {activeView === "subscriptions" ? (
+          <SubscriptionUsageContent
+            statuses={subscriptions.statuses}
+            isPending={subscriptions.isPending}
+            history={subscriptionHistory.merged}
+            historyDay={subscriptionWindow.untilDay}
+            isHistoryPending={subscriptionHistory.isPending || subscriptionHistory.isPartial}
+            hasHistoryResponse={subscriptionHistory.environments.some(
+              (environment) => environment.summary !== null,
+            )}
+            isHistoryIncomplete={
+              subscriptionHistory.environments.some((environment) => environment.error !== null) ||
+              subscriptionHistory.merged.staleEnvironments.length > 0
+            }
+          />
         ) : (
           <>
-            <ChartCard
+            <UsageCoverageNotice
+              environments={environments}
               merged={merged}
-              days={chartDays}
-              daily={chartTotals}
-              metric={metric}
-              onMetricChange={setMetric}
-              sinceDay={window.sinceDay}
-              untilDay={window.untilDay}
-              isPast24Hours={isPast24Hours}
-              timeZone={window.timeZone}
+              isPartial={isPartial}
             />
-            <ProviderSection merged={merged} metric={metric} />
-            <TotalsSection merged={merged} isPast24Hours={isPast24Hours} />
-            <ModelsSection merged={merged} />
+            {isPending ? (
+              <Text className="py-16 text-center text-base text-foreground-muted">
+                Scanning provider transcripts…
+              </Text>
+            ) : environments.length === 0 ? (
+              <Text className="py-16 text-center text-base text-foreground-muted">
+                Connect an environment to see usage.
+              </Text>
+            ) : (
+              <>
+                <ChartCard
+                  merged={merged}
+                  days={chartDays}
+                  daily={chartTotals}
+                  metric={metric}
+                  onMetricChange={setMetric}
+                  sinceDay={window.sinceDay}
+                  untilDay={window.untilDay}
+                  isPast24Hours={isPast24Hours}
+                  timeZone={window.timeZone}
+                />
+                <ProviderSection merged={merged} metric={metric} />
+                <TotalsSection merged={merged} isPast24Hours={isPast24Hours} />
+                <ModelsSection merged={merged} />
+              </>
+            )}
           </>
         )}
       </ScrollView>
+    </View>
+  );
+}
+
+function subscriptionPlanLabel(
+  provider: SubscriptionUsageProvider,
+  plan: string | null,
+  fallback: string | undefined,
+): string {
+  if (fallback) return fallback.replace(/ Subscription$/, "");
+  if (!plan || plan === "unknown")
+    return `${provider === "grok" ? "Grok" : provider === "claude" ? "Claude" : "ChatGPT"} subscription`;
+  const normalizedPlan = plan.replaceAll("_", " ");
+  if (provider === "grok") return normalizedPlan;
+  if (provider === "claude") {
+    return normalizedPlan.toLowerCase().startsWith("claude")
+      ? normalizedPlan
+      : `Claude ${normalizedPlan}`;
+  }
+  return `ChatGPT ${normalizedPlan}`;
+}
+
+function subscriptionWindowLabel(window: SubscriptionUsageWindow): string {
+  if (window.kind === "weekly") return "Weekly limit";
+  if (window.kind === "monthly") return "Monthly limit";
+  if (window.windowDurationMinutes === 300) return "5-hour limit";
+  if (window.windowDurationMinutes === 10_080) return "Weekly limit";
+  if (window.windowDurationMinutes !== null) {
+    if (window.windowDurationMinutes % 1_440 === 0) {
+      return `${window.windowDurationMinutes / 1_440}-day limit`;
+    }
+    if (window.windowDurationMinutes % 60 === 0) {
+      return `${window.windowDurationMinutes / 60}-hour limit`;
+    }
+  }
+  return window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+}
+
+function subscriptionUnavailableMessage(provider: ServerProvider): string {
+  if (provider.driver === "grok") {
+    return "This Grok account or CLI version did not report subscription limits. Sign in to Grok, update the CLI, and refresh to try again.";
+  }
+  if (provider.driver === "claudeAgent") {
+    if (provider.auth.status !== "authenticated") {
+      return "Sign in to Claude Code with a Claude subscription to read subscription limits.";
+    }
+    if (
+      provider.auth.type === "apiKey" ||
+      provider.auth.type === "bedrock" ||
+      provider.auth.type === "vertex" ||
+      provider.auth.type === "foundry" ||
+      provider.auth.type === "anthropicAws" ||
+      provider.auth.type === "mantle" ||
+      provider.auth.type === "gateway"
+    ) {
+      return "This Claude instance uses API billing, so it has no Claude subscription limits.";
+    }
+    return "This Claude account or Claude Code version did not report subscription limits. Update Claude Code and refresh to try again.";
+  }
+  if (provider.auth.status !== "authenticated") {
+    return "Sign in to Codex with ChatGPT to read subscription limits.";
+  }
+  if (provider.auth.type !== "chatgpt") {
+    return "This Codex instance uses API billing, so it has no ChatGPT subscription limits.";
+  }
+  return "This Codex version did not report subscription limits. Update Codex and refresh to try again.";
+}
+
+function subscriptionResetLabel(resetsAt: string | null): string {
+  if (resetsAt === null) return "Reset time unavailable";
+  const reset = new Date(resetsAt);
+  if (Number.isNaN(reset.getTime())) return "Reset time unavailable";
+  return `Resets ${reset.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
+function SubscriptionUsageContent(props: {
+  readonly statuses: readonly SubscriptionUsageStatus[];
+  readonly isPending: boolean;
+  readonly history: MergedUsage;
+  readonly historyDay: string;
+  readonly isHistoryPending: boolean;
+  readonly hasHistoryResponse: boolean;
+  readonly isHistoryIncomplete: boolean;
+}) {
+  const [revealedEmails, setRevealedEmails] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleEmail = (email: string) => {
+    setRevealedEmails((current) => {
+      const next = new Set(current);
+      if (next.has(email)) next.delete(email);
+      else next.add(email);
+      return next;
+    });
+  };
+
+  if (props.isPending) {
+    return (
+      <Text className="py-16 text-center text-base text-foreground-muted">
+        Reading subscription limits…
+      </Text>
+    );
+  }
+
+  if (props.statuses.length === 0) {
+    return (
+      <View className="gap-1 rounded-[24px] border-continuous bg-card p-5">
+        <Text className="text-center text-base font-t3-medium text-foreground">
+          No supported provider configured
+        </Text>
+        <Text className="text-center text-sm text-foreground-muted">
+          Enable Codex, Claude, or Grok and sign in to see subscription limits here.
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <View className="gap-4">
+      {props.statuses.map((status) => {
+        const { provider } = status;
+        const expectedUsageProvider = expectedSubscriptionProvider(provider) ?? "chatgpt";
+        const usage =
+          provider.subscriptionUsage?.provider === expectedUsageProvider
+            ? provider.subscriptionUsage
+            : null;
+        const providerName =
+          expectedUsageProvider === "grok"
+            ? "Grok"
+            : expectedUsageProvider === "claude"
+              ? "Claude"
+              : "ChatGPT";
+        const email = provider.auth.email?.trim();
+        const emailKey = email?.toLocaleLowerCase();
+        const emailIsConcealed = emailKey ? !revealedEmails.has(emailKey) : false;
+        const historyProvider =
+          expectedUsageProvider === "grok"
+            ? "grok"
+            : expectedUsageProvider === "claude"
+              ? "claude"
+              : "codex";
+        const today = props.history.daily
+          .find((day) => day.day === props.historyDay)
+          ?.byProvider.get(historyProvider);
+        const last30Days = props.history.providers.find(
+          (totals) => totals.provider === historyProvider,
+        );
+        const historyValue = (value: string) =>
+          props.isHistoryPending || !props.hasHistoryResponse ? "—" : value;
+        return (
+          <View
+            key={`${provider.driver}:${provider.instanceId}:${provider.auth.email ?? status.sourceLabels.join(",")}`}
+            className="gap-5 rounded-[24px] border-continuous bg-card p-5"
+          >
+            <View className="flex-row items-start justify-between gap-3">
+              <View className="min-w-0 flex-1 gap-0.5">
+                <Text className="text-lg font-t3-medium text-foreground">{providerName}</Text>
+                <Text className="text-sm text-foreground-muted" numberOfLines={1}>
+                  {usage
+                    ? subscriptionPlanLabel(usage.provider, usage.plan, provider.auth.label)
+                    : (provider.auth.label ?? provider.displayName ?? provider.instanceId)}
+                </Text>
+              </View>
+              <Text className="text-xs tabular-nums text-foreground-tertiary">
+                {new Date(provider.checkedAt).toLocaleTimeString(undefined, {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </Text>
+            </View>
+
+            {usage && usage.windows.length > 0 ? (
+              <View className="gap-5">
+                {usage.windows.map((window) => {
+                  const remainingPercent = Math.max(0, 100 - window.usedPercent);
+                  return (
+                    <View key={window.kind} className="gap-2">
+                      <View className="flex-row items-baseline justify-between gap-3">
+                        <Text className="text-base text-foreground">
+                          {subscriptionWindowLabel(window)}
+                        </Text>
+                        <Text className="text-base font-t3-medium tabular-nums text-foreground">
+                          {window.usedPercent.toLocaleString(undefined, {
+                            maximumFractionDigits: 1,
+                          })}
+                          % used
+                        </Text>
+                      </View>
+                      <View className="h-2 overflow-hidden rounded-full bg-subtle">
+                        <View
+                          accessibilityRole="progressbar"
+                          accessibilityLabel={subscriptionWindowLabel(window)}
+                          accessibilityValue={{
+                            min: 0,
+                            max: 100,
+                            now: window.usedPercent,
+                          }}
+                          className={
+                            window.usedPercent >= 90
+                              ? "h-full rounded-full bg-danger-foreground"
+                              : "h-full rounded-full bg-foreground"
+                          }
+                          style={{ width: `${window.usedPercent}%` }}
+                        />
+                      </View>
+                      <View className="flex-row flex-wrap justify-between gap-x-3 gap-y-1">
+                        <Text className="text-xs text-foreground-muted">
+                          {remainingPercent.toLocaleString(undefined, {
+                            maximumFractionDigits: 1,
+                          })}
+                          % remaining
+                        </Text>
+                        <Text className="text-xs text-foreground-muted">
+                          {subscriptionResetLabel(window.resetsAt)}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <Text className="border-t border-border-subtle pt-4 text-sm text-foreground-muted">
+                {subscriptionUnavailableMessage(provider)}
+              </Text>
+            )}
+
+            <View className="gap-3 border-t border-border-subtle pt-4">
+              <View className="flex-row items-baseline justify-between gap-3">
+                <Text className="text-xs font-t3-medium uppercase tracking-wide text-foreground-muted">
+                  Token history
+                </Text>
+                <Text className="text-xs text-foreground-tertiary">API-equivalent</Text>
+              </View>
+              <View className="flex-row gap-5">
+                <SubscriptionHistoryMetric
+                  label="Cost today"
+                  value={historyValue(formatUsd(today?.costUsd ?? 0))}
+                />
+                <SubscriptionHistoryMetric
+                  label="Cost · 30 days"
+                  value={historyValue(formatUsd(last30Days?.costUsd ?? 0))}
+                />
+              </View>
+              <View className="flex-row gap-5">
+                <SubscriptionHistoryMetric
+                  label="Tokens today"
+                  value={historyValue(formatTokens(today?.totalTokens ?? 0))}
+                />
+                <SubscriptionHistoryMetric
+                  label="Tokens · 30 days"
+                  value={historyValue(formatTokens(last30Days?.totalTokens ?? 0))}
+                />
+              </View>
+              <Text className="text-xs leading-4 text-foreground-tertiary">
+                {props.isHistoryPending
+                  ? "Scanning local transcript history…"
+                  : !props.hasHistoryResponse
+                    ? "Token history is unavailable from connected environments."
+                    : props.isHistoryIncomplete
+                      ? "Some connected environments could not report current history; totals may be incomplete."
+                      : last30Days && last30Days.unpricedRecords > 0
+                        ? `${formatCount(last30Days.unpricedRecords)} records use unknown model pricing and are excluded from cost.`
+                        : last30Days && last30Days.cacheSavingsUsd > 0
+                          ? `Includes cached-token pricing, saving ${formatUsd(last30Days.cacheSavingsUsd)} over full input rates.`
+                          : "Uses provider-reported cost or cache-aware model pricing when available."}
+              </Text>
+            </View>
+
+            {email && emailKey ? (
+              <View className="flex-row border-t border-border-subtle pt-3">
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    emailIsConcealed ? "Reveal account email" : "Hide account email"
+                  }
+                  accessibilityState={{ selected: emailIsConcealed }}
+                  onPress={() => toggleEmail(emailKey)}
+                >
+                  <Text
+                    className="text-xs text-foreground-tertiary"
+                    style={emailIsConcealed ? { filter: [{ blur: 2 }] } : undefined}
+                  >
+                    {emailIsConcealed ? scrambleSubscriptionEmail(email) : email}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+
+      <Text className="px-1 text-xs text-foreground-tertiary">
+        Limits come directly from the signed-in provider account and include usage outside T3 Code.
+        Token history is combined by provider across connected environments and may not match one
+        account's limits.
+      </Text>
+    </View>
+  );
+}
+
+function SubscriptionHistoryMetric(props: { readonly label: string; readonly value: string }) {
+  return (
+    <View className="min-w-0 flex-1">
+      <Text className="text-xs text-foreground-muted">{props.label}</Text>
+      <Text
+        className="mt-1 text-base font-t3-medium tabular-nums text-foreground"
+        numberOfLines={1}
+      >
+        {props.value}
+      </Text>
     </View>
   );
 }
@@ -170,8 +560,11 @@ function SegmentedControl<Value extends number | string>(props: {
             }
           >
             <Text
+              adjustsFontSizeToFit
+              minimumFontScale={0.75}
+              numberOfLines={1}
               className={
-                active ? "text-sm font-t3-medium text-foreground" : "text-sm text-foreground-muted"
+                active ? "text-xs font-t3-medium text-foreground" : "text-xs text-foreground-muted"
               }
             >
               {option.label}

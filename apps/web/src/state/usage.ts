@@ -8,6 +8,10 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
+  collectSubscriptionUsageStatuses,
+  type SubscriptionEnvironmentProviders,
+} from "@t3tools/client-runtime/state/subscription-usage";
+import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageSummary,
@@ -15,12 +19,13 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
+import { useAtomCommand } from "./use-atom-command";
 
 export interface EnvironmentUsageStatus {
   readonly environmentId: EnvironmentId;
@@ -69,6 +74,68 @@ export interface UsageView {
    */
   readonly isPartial: boolean;
   readonly refresh: () => void;
+}
+
+const subscriptionUsageAtom = Atom.make((get) => {
+  const presentations = get(environmentPresentations.presentationsAtom);
+  const environments: SubscriptionEnvironmentProviders[] = [];
+  for (const [environmentId, presentation] of presentations) {
+    environments.push({
+      environmentId,
+      label: presentation.entry.target.label,
+      providers: get(serverEnvironment.providersValueAtom(environmentId)),
+    });
+  }
+
+  return {
+    environments,
+    statuses: collectSubscriptionUsageStatuses(environments),
+    isPending:
+      environments.some((environment) => environment.providers === null) ||
+      environments.some((environment) =>
+        environment.providers?.some(
+          (provider) =>
+            (provider.driver === "codex" ||
+              provider.driver === "claudeAgent" ||
+              provider.driver === "grok") &&
+            provider.enabled &&
+            provider.status === "warning" &&
+            provider.auth.status === "unknown",
+        ),
+      ),
+  };
+}).pipe(Atom.withLabel("web-usage:subscriptions"));
+
+export function useSubscriptionUsage() {
+  const state = useAtomValue(subscriptionUsageAtom);
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
+
+  const refresh = useCallback(async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    setIsRefreshing(true);
+    try {
+      await Promise.all(
+        state.environments.map((environment) =>
+          refreshProviders({ environmentId: environment.environmentId, input: {} }),
+        ),
+      );
+    } finally {
+      refreshingRef.current = false;
+      setIsRefreshing(false);
+    }
+  }, [refreshProviders, state.environments]);
+
+  return {
+    statuses: state.statuses,
+    isPending: state.isPending,
+    isRefreshing,
+    refresh,
+  };
 }
 
 export function useUsage(input: UsageSummaryInput): UsageView {

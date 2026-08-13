@@ -15,6 +15,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 
 import type {
   CodexSettings,
+  ProviderSubscriptionUsage,
   ServerProvider,
   ServerProviderState,
   ModelCapabilities,
@@ -45,9 +46,56 @@ const CODEX_PRESENTATION = {
 
 export interface CodexAppServerProviderSnapshot {
   readonly account: CodexSchema.V2GetAccountResponse;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+}
+
+function codexSubscriptionWindow(
+  kind: "primary" | "secondary",
+  window: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitWindow | null | undefined,
+): ProviderSubscriptionUsage["windows"][number] | undefined {
+  if (!window) return undefined;
+
+  return {
+    kind,
+    usedPercent: Math.min(100, Math.max(0, window.usedPercent)),
+    windowDurationMinutes:
+      window.windowDurationMins == null ? null : Math.max(0, window.windowDurationMins),
+    resetsAt:
+      window.resetsAt == null
+        ? null
+        : Option.match(DateTime.make(window.resetsAt * 1_000), {
+            onNone: () => null,
+            onSome: DateTime.formatIso,
+          }),
+  };
+}
+
+/** Maps Codex's ChatGPT quota response onto the provider-neutral wire shape. */
+export function mapCodexSubscriptionUsage(input: {
+  readonly account: CodexSchema.V2GetAccountResponse;
+  readonly rateLimits?: CodexSchema.V2GetAccountRateLimitsResponse;
+}): ProviderSubscriptionUsage | undefined {
+  if (input.account.account?.type !== "chatgpt" || input.rateLimits === undefined) {
+    return undefined;
+  }
+
+  const rateLimits = input.rateLimits.rateLimits;
+  const windows = [
+    codexSubscriptionWindow("primary", rateLimits.primary),
+    codexSubscriptionWindow("secondary", rateLimits.secondary),
+  ].filter((window) => window !== undefined);
+
+  return {
+    provider: "chatgpt",
+    plan:
+      rateLimits.planType && rateLimits.planType !== "unknown"
+        ? rateLimits.planType
+        : input.account.account.planType,
+    windows,
+  };
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -395,18 +443,22 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      accountResponse.account?.type === "chatgpt"
+        ? client.request("account/rateLimits/read", undefined).pipe(Effect.option)
+        : Effect.succeed(Option.none<CodexSchema.V2GetAccountRateLimitsResponse>()),
     ],
     { concurrency: "unbounded" },
   );
 
   return {
     account: accountResponse,
+    ...(Option.isSome(rateLimits) ? { rateLimits: rateLimits.value } : {}),
     version,
     models: applyPreferredCodexDefaultModel(
       appendCustomCodexModels(models, input.customModels ?? []),
@@ -594,6 +646,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
 
   const snapshot = probeResult.success.value;
   const accountStatus = accountProbeStatus(snapshot.account);
+  const subscriptionUsage = mapCodexSubscriptionUsage(snapshot);
 
   return buildServerProvider({
     presentation: CODEX_PRESENTATION,
@@ -601,6 +654,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     checkedAt,
     models: snapshot.models,
     skills: snapshot.skills,
+    ...(subscriptionUsage ? { subscriptionUsage } : {}),
     probe: {
       installed: true,
       version: snapshot.version ?? null,

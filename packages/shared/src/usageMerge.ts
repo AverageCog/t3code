@@ -23,8 +23,10 @@ export interface EnvironmentUsage {
 export interface ProviderTotals {
   readonly provider: UsageProviderKind;
   readonly costUsd: number;
+  readonly cacheSavingsUsd: number;
   readonly totalTokens: number;
   readonly records: number;
+  readonly unpricedRecords: number;
   readonly costShare: number;
   readonly tokenShare: number;
 }
@@ -228,7 +230,13 @@ export function mergeUsage(
 
   const providerAccumulator = new Map<
     UsageProviderKind,
-    { costUsd: number; totalTokens: number; records: number }
+    {
+      costUsd: number;
+      cacheSavingsUsd: number;
+      totalTokens: number;
+      records: number;
+      unpricedRecords: number;
+    }
   >();
   const modelAccumulator = new Map<
     string,
@@ -278,12 +286,16 @@ export function mergeUsage(
 
       const provider = providerAccumulator.get(bucket.provider) ?? {
         costUsd: 0,
+        cacheSavingsUsd: 0,
         totalTokens: 0,
         records: 0,
+        unpricedRecords: 0,
       };
       provider.costUsd += bucket.costUsd;
+      provider.cacheSavingsUsd += bucket.cacheSavingsUsd;
       provider.totalTokens += tokens;
       provider.records += bucket.records;
+      provider.unpricedRecords += bucket.unpricedRecords;
       providerAccumulator.set(bucket.provider, provider);
 
       const modelKey = `${bucket.provider} ${bucket.model}`;
@@ -339,8 +351,10 @@ export function mergeUsage(
     .map(([provider, totals]) => ({
       provider,
       costUsd: totals.costUsd,
+      cacheSavingsUsd: totals.cacheSavingsUsd,
       totalTokens: totals.totalTokens,
       records: totals.records,
+      unpricedRecords: totals.unpricedRecords,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
       tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
     }))

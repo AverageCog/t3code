@@ -1,6 +1,7 @@
 import {
   type GrokSettings,
   type ModelCapabilities,
+  type ProviderSubscriptionUsage,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -12,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createModelCapabilities } from "@t3tools/shared/model";
@@ -48,6 +50,37 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+export const GROK_BILLING_ACP_METHOD = "_x.ai/billing";
+
+const GrokBillingCent = Schema.Struct({
+  val: Schema.optionalKey(Schema.Number),
+});
+
+const GrokBillingPeriod = Schema.Struct({
+  type: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  start: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  end: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+
+const GrokBillingConfig = Schema.Struct({
+  creditUsagePercent: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  currentPeriod: Schema.optionalKey(Schema.NullOr(GrokBillingPeriod)),
+  monthlyLimit: Schema.optionalKey(Schema.NullOr(GrokBillingCent)),
+  used: Schema.optionalKey(Schema.NullOr(GrokBillingCent)),
+  billingPeriodStart: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  billingPeriodEnd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+
+const GrokBillingResponse = Schema.Struct({
+  config: Schema.optionalKey(Schema.NullOr(GrokBillingConfig)),
+  subscriptionTier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  subscription_tier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+
+const decodeGrokBillingResponse = Schema.decodeUnknownOption(GrokBillingResponse);
+const decodeGrokBillingResponseEnvelope = Schema.decodeUnknownOption(
+  Schema.Struct({ result: GrokBillingResponse }),
+);
 
 const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -221,7 +254,93 @@ export function buildGrokDiscoveredModelsFromSessionModelState(
     .filter((model): model is ServerProviderModel => model !== undefined);
 }
 
-const discoverGrokModelsViaAcp = (
+function normalizedIsoDateTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return Option.match(DateTime.make(value), {
+    onNone: () => null,
+    onSome: DateTime.formatIso,
+  });
+}
+
+function grokBillingWindowDurationMinutes(start: string | null, end: string | null): number | null {
+  if (!start || !end) return null;
+  const parsedStart = DateTime.make(start);
+  const parsedEnd = DateTime.make(end);
+  if (Option.isNone(parsedStart) || Option.isNone(parsedEnd)) return null;
+  const duration =
+    DateTime.toEpochMillis(parsedEnd.value) - DateTime.toEpochMillis(parsedStart.value);
+  return Number.isFinite(duration) && duration >= 0 ? Math.round(duration / 60_000) : null;
+}
+
+/** Normalizes the consumer billing shape reported by Grok's `x.ai/billing` ACP extension. */
+export function buildGrokSubscriptionUsageFromBilling(
+  input: unknown,
+): ProviderSubscriptionUsage | undefined {
+  const envelope = decodeGrokBillingResponseEnvelope(input);
+  const decoded = Option.isSome(envelope)
+    ? Option.some(envelope.value.result)
+    : decodeGrokBillingResponse(input);
+  if (Option.isNone(decoded)) return undefined;
+
+  const response = decoded.value;
+  const plan = response.subscriptionTier?.trim() || response.subscription_tier?.trim() || null;
+  const config = response.config ?? null;
+  if (!config) {
+    return { provider: "grok", plan, windows: [] };
+  }
+
+  const currentPeriod = config.currentPeriod ?? null;
+  const start = normalizedIsoDateTime(currentPeriod?.start ?? config.billingPeriodStart);
+  const resetsAt = normalizedIsoDateTime(currentPeriod?.end ?? config.billingPeriodEnd);
+  const windowDurationMinutes = grokBillingWindowDurationMinutes(start, resetsAt);
+  const periodType = currentPeriod?.type?.trim().toUpperCase();
+  const kind = periodType?.includes("WEEKLY")
+    ? ("weekly" as const)
+    : periodType?.includes("MONTHLY")
+      ? ("monthly" as const)
+      : config.monthlyLimit !== null && config.monthlyLimit !== undefined
+        ? ("monthly" as const)
+        : windowDurationMinutes === 10_080
+          ? ("weekly" as const)
+          : undefined;
+
+  const directPercent = config.creditUsagePercent;
+  const legacyLimit = Math.abs(config.monthlyLimit?.val ?? 0);
+  const legacyUsed = Math.abs(config.used?.val ?? 0);
+  const usedPercent =
+    typeof directPercent === "number" && Number.isFinite(directPercent)
+      ? directPercent
+      : legacyLimit > 0 && Number.isFinite(legacyUsed)
+        ? (legacyUsed / legacyLimit) * 100
+        : undefined;
+
+  if (!kind || usedPercent === undefined) {
+    return { provider: "grok", plan, windows: [] };
+  }
+
+  return {
+    provider: "grok",
+    plan,
+    windows: [
+      {
+        kind,
+        usedPercent: Math.min(100, Math.max(0, usedPercent)),
+        windowDurationMinutes,
+        resetsAt,
+      },
+    ],
+  };
+}
+
+export function requestGrokSubscriptionUsage<E>(
+  request: (method: string, payload: unknown) => Effect.Effect<unknown, E>,
+): Effect.Effect<ProviderSubscriptionUsage | undefined, E> {
+  return request(GROK_BILLING_ACP_METHOD, {}).pipe(
+    Effect.map(buildGrokSubscriptionUsageFromBilling),
+  );
+}
+
+const probeGrokViaAcp = (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
 ) =>
@@ -235,7 +354,12 @@ const discoverGrokModelsViaAcp = (
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
     const started = yield* acp.start();
-    return buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models);
+    const billing = yield* requestGrokSubscriptionUsage(acp.request).pipe(Effect.option);
+    const subscriptionUsage = Option.isSome(billing) ? billing.value : undefined;
+    return {
+      models: buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models),
+      ...(subscriptionUsage ? { subscriptionUsage } : {}),
+    };
   }).pipe(Effect.scoped);
 
 const runGrokVersionCommand = (
@@ -259,6 +383,7 @@ const runGrokVersionCommand = (
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  acpProbe: typeof probeGrokViaAcp = probeGrokViaAcp,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -349,7 +474,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const discoveryExit = yield* discoverGrokModelsViaAcp(grokSettings, environment).pipe(
+  const discoveryExit = yield* acpProbe(grokSettings, environment).pipe(
     Effect.timeoutOption(GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
     Effect.exit,
   );
@@ -389,7 +514,8 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       },
     });
   }
-  const discoveredModels = discoveryExit.value.value;
+  const acpSnapshot = discoveryExit.value.value;
+  const discoveredModels = acpSnapshot.models;
   const models =
     discoveredModels.length > 0
       ? grokModelsFromSettings(grokSettings.customModels, discoveredModels)
@@ -400,6 +526,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     enabled: grokSettings.enabled,
     checkedAt,
     models,
+    ...(acpSnapshot.subscriptionUsage ? { subscriptionUsage: acpSnapshot.subscriptionUsage } : {}),
     probe: {
       installed: true,
       version,

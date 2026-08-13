@@ -10,7 +10,9 @@ import {
   buildGrokCapabilitiesFromModelMeta,
   buildGrokDiscoveredModelsFromSessionModelState,
   buildInitialGrokProviderSnapshot,
+  buildGrokSubscriptionUsageFromBilling,
   checkGrokProviderStatus,
+  requestGrokSubscriptionUsage,
 } from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
@@ -153,6 +155,106 @@ describe("buildGrokDiscoveredModelsFromSessionModelState", () => {
   });
 });
 
+describe("buildGrokSubscriptionUsageFromBilling", () => {
+  it("maps Grok's current shared weekly subscription pool", () => {
+    expect(
+      buildGrokSubscriptionUsageFromBilling({
+        subscriptionTier: "SuperGrok Heavy",
+        config: {
+          creditUsagePercent: 42.5,
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-06-01T00:00:00Z",
+            end: "2026-06-08T00:00:00Z",
+          },
+          isUnifiedBillingUser: true,
+        },
+      }),
+    ).toEqual({
+      provider: "grok",
+      plan: "SuperGrok Heavy",
+      windows: [
+        {
+          kind: "weekly",
+          usedPercent: 42.5,
+          windowDurationMinutes: 10_080,
+          resetsAt: "2026-06-08T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it.effect("uses Grok's wire-prefixed ACP method and stable response shape", () =>
+    Effect.gen(function* () {
+      const requests: Array<{ readonly method: string; readonly payload: unknown }> = [];
+      const usage = yield* requestGrokSubscriptionUsage((method, payload) => {
+        requests.push({ method, payload });
+        return Effect.succeed({
+          config: {
+            creditUsagePercent: 31,
+            currentPeriod: {
+              type: "USAGE_PERIOD_TYPE_WEEKLY",
+              start: "2026-08-10T00:00:00Z",
+              end: "2026-08-17T00:00:00Z",
+            },
+          },
+          subscription_tier: "SuperGrok",
+        });
+      });
+
+      expect(requests).toEqual([{ method: "_x.ai/billing", payload: {} }]);
+      expect(usage?.plan).toBe("SuperGrok");
+      expect(usage?.windows[0]?.kind).toBe("weekly");
+    }),
+  );
+
+  it("unwraps compatibility response envelopes", () => {
+    expect(
+      buildGrokSubscriptionUsageFromBilling({
+        result: {
+          config: {
+            creditUsagePercent: 12,
+            currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" },
+          },
+        },
+      })?.windows[0]?.usedPercent,
+    ).toBe(12);
+  });
+
+  it("supports Grok's legacy monthly billing response", () => {
+    expect(
+      buildGrokSubscriptionUsageFromBilling({
+        config: {
+          monthlyLimit: { val: -2_000 },
+          used: { val: -500 },
+          billingPeriodStart: "2026-04-01T00:00:00Z",
+          billingPeriodEnd: "2026-05-01T00:00:00Z",
+        },
+      }),
+    ).toEqual({
+      provider: "grok",
+      plan: null,
+      windows: [
+        {
+          kind: "monthly",
+          usedPercent: 25,
+          windowDurationMinutes: 43_200,
+          resetsAt: "2026-05-01T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("keeps a successful billing read without inventing a window", () => {
+    expect(buildGrokSubscriptionUsageFromBilling({ config: null })).toEqual({
+      provider: "grok",
+      plan: null,
+      windows: [],
+    });
+    expect(buildGrokSubscriptionUsageFromBilling(null)).toBeUndefined();
+  });
+});
+
 describe("buildInitialGrokProviderSnapshot", () => {
   it.effect("returns a disabled snapshot when settings.enabled is false", () =>
     Effect.gen(function* () {
@@ -221,6 +323,45 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
       expect(snapshot.status).toBe("error");
       expect(snapshot.message).toBe("Grok CLI is installed but failed to run.");
       expect(snapshot.message).not.toContain(secretStderr);
+    }),
+  );
+
+  it.effect("attaches subscription usage returned by the ACP billing extension", () =>
+    Effect.gen(function* () {
+      const subscriptionUsage = {
+        provider: "grok" as const,
+        plan: "SuperGrok Heavy",
+        windows: [
+          {
+            kind: "weekly" as const,
+            usedPercent: 42.5,
+            windowDurationMinutes: 10_080,
+            resetsAt: "2026-06-08T00:00:00.000Z",
+          },
+        ],
+      };
+      const snapshot = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-billing-" });
+          const grokPath = path.join(dir, "grok");
+          yield* fs.writeFileString(
+            grokPath,
+            ["#!/bin/sh", 'printf "grok-cli 1.0.3\\n"', "exit 0", ""].join("\n"),
+          );
+          yield* fs.chmod(grokPath, 0o755);
+
+          return yield* checkGrokProviderStatus(
+            decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
+            process.env,
+            () => Effect.succeed({ models: [], subscriptionUsage }),
+          );
+        }),
+      );
+
+      expect(snapshot.status).toBe("ready");
+      expect(snapshot.subscriptionUsage).toEqual(subscriptionUsage);
     }),
   );
 
