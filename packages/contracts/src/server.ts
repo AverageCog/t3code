@@ -72,9 +72,17 @@ export const SubscriptionUsageWindowKind = Schema.Literals([
 ]);
 export type SubscriptionUsageWindowKind = typeof SubscriptionUsageWindowKind.Type;
 
+export const SubscriptionUsageWindowScope = Schema.Struct({
+  type: Schema.Literals(["model", "feature"]),
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+});
+export type SubscriptionUsageWindowScope = typeof SubscriptionUsageWindowScope.Type;
+
 /** One provider-reported rolling subscription quota window. */
 export const SubscriptionUsageWindow = Schema.Struct({
   kind: SubscriptionUsageWindowKind,
+  scope: Schema.optionalKey(SubscriptionUsageWindowScope),
   usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
   windowDurationMinutes: Schema.NullOr(NonNegativeInt),
   resetsAt: Schema.NullOr(IsoDateTime),

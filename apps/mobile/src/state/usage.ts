@@ -11,7 +11,7 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
-  collectSubscriptionUsageStatuses,
+  collectSubscriptionUsageState,
   type SubscriptionEnvironmentProviders,
 } from "@t3tools/client-runtime/state/subscription-usage";
 import {
@@ -86,27 +86,12 @@ const subscriptionUsageAtom = Atom.make((get) => {
     environments.push({
       environmentId,
       label: presentation.entry.target.label,
+      connectionPhase: presentation.connection.phase,
       providers: get(serverEnvironment.providersValueAtom(environmentId)),
     });
   }
 
-  return {
-    environments,
-    statuses: collectSubscriptionUsageStatuses(environments),
-    isPending:
-      environments.some((environment) => environment.providers === null) ||
-      environments.some((environment) =>
-        environment.providers?.some(
-          (provider) =>
-            (provider.driver === "codex" ||
-              provider.driver === "claudeAgent" ||
-              provider.driver === "grok") &&
-            provider.enabled &&
-            provider.status === "warning" &&
-            provider.auth.status === "unknown",
-        ),
-      ),
-  };
+  return collectSubscriptionUsageState(environments);
 }).pipe(Atom.withLabel("mobile-usage:subscriptions"));
 
 export function useSubscriptionUsage() {
@@ -134,8 +119,10 @@ export function useSubscriptionUsage() {
   }, [refreshProviders, state.environments]);
 
   return {
+    environments: state.environments,
     statuses: state.statuses,
     isPending: state.isPending,
+    isPartial: state.isPartial,
     isRefreshing,
     refresh,
   };

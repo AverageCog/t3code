@@ -2,6 +2,7 @@ import { useNavigation } from "@react-navigation/native";
 import {
   expectedSubscriptionProvider,
   scrambleSubscriptionEmail,
+  type SubscriptionEnvironmentUsageStatus,
   type SubscriptionUsageStatus,
 } from "@t3tools/client-runtime/state/subscription-usage";
 import type {
@@ -172,6 +173,7 @@ export function UsageRouteScreen() {
 
         {activeView === "subscriptions" ? (
           <SubscriptionUsageContent
+            environments={subscriptions.environments}
             statuses={subscriptions.statuses}
             isPending={subscriptions.isPending}
             history={subscriptionHistory.merged}
@@ -244,19 +246,19 @@ function subscriptionPlanLabel(
 }
 
 function subscriptionWindowLabel(window: SubscriptionUsageWindow): string {
-  if (window.kind === "weekly") return "Weekly limit";
-  if (window.kind === "monthly") return "Monthly limit";
-  if (window.windowDurationMinutes === 300) return "5-hour limit";
-  if (window.windowDurationMinutes === 10_080) return "Weekly limit";
-  if (window.windowDurationMinutes !== null) {
+  let label: string;
+  if (window.kind === "weekly") label = "Weekly limit";
+  else if (window.kind === "monthly") label = "Monthly limit";
+  else if (window.windowDurationMinutes === 300) label = "5-hour limit";
+  else if (window.windowDurationMinutes === 10_080) label = "Weekly limit";
+  else if (window.windowDurationMinutes !== null) {
     if (window.windowDurationMinutes % 1_440 === 0) {
-      return `${window.windowDurationMinutes / 1_440}-day limit`;
-    }
-    if (window.windowDurationMinutes % 60 === 0) {
-      return `${window.windowDurationMinutes / 60}-hour limit`;
-    }
-  }
-  return window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+      label = `${window.windowDurationMinutes / 1_440}-day limit`;
+    } else if (window.windowDurationMinutes % 60 === 0) {
+      label = `${window.windowDurationMinutes / 60}-hour limit`;
+    } else label = window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+  } else label = window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+  return window.scope ? `${window.scope.label} ${label.toLocaleLowerCase()}` : label;
 }
 
 function subscriptionUnavailableMessage(provider: ServerProvider): string {
@@ -302,6 +304,7 @@ function subscriptionResetLabel(resetsAt: string | null): string {
 }
 
 function SubscriptionUsageContent(props: {
+  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
   readonly statuses: readonly SubscriptionUsageStatus[];
   readonly isPending: boolean;
   readonly history: MergedUsage;
@@ -330,19 +333,23 @@ function SubscriptionUsageContent(props: {
 
   if (props.statuses.length === 0) {
     return (
-      <View className="gap-1 rounded-[24px] border-continuous bg-card p-5">
-        <Text className="text-center text-base font-t3-medium text-foreground">
-          No supported provider configured
-        </Text>
-        <Text className="text-center text-sm text-foreground-muted">
-          Enable Codex, Claude, or Grok and sign in to see subscription limits here.
-        </Text>
+      <View className="gap-4">
+        <SubscriptionCoverageNotice environments={props.environments} />
+        <View className="gap-1 rounded-[24px] border-continuous bg-card p-5">
+          <Text className="text-center text-base font-t3-medium text-foreground">
+            No supported provider configured
+          </Text>
+          <Text className="text-center text-sm text-foreground-muted">
+            Enable Codex, Claude, or Grok and sign in to see subscription limits here.
+          </Text>
+        </View>
       </View>
     );
   }
 
   return (
     <View className="gap-4">
+      <SubscriptionCoverageNotice environments={props.environments} />
       {props.statuses.map((status) => {
         const { provider } = status;
         const expectedUsageProvider = expectedSubscriptionProvider(provider) ?? "chatgpt";
@@ -400,7 +407,10 @@ function SubscriptionUsageContent(props: {
                 {usage.windows.map((window) => {
                   const remainingPercent = Math.max(0, 100 - window.usedPercent);
                   return (
-                    <View key={window.kind} className="gap-2">
+                    <View
+                      key={`${window.kind}:${window.scope?.type ?? "overall"}:${window.scope?.id ?? "all"}`}
+                      className="gap-2"
+                    >
                       <View className="flex-row items-baseline justify-between gap-3">
                         <Text className="text-base text-foreground">
                           {subscriptionWindowLabel(window)}
@@ -519,6 +529,32 @@ function SubscriptionUsageContent(props: {
         Limits come directly from the signed-in provider account and include usage outside T3 Code.
         Token history is combined by provider across connected environments and may not match one
         account's limits.
+      </Text>
+    </View>
+  );
+}
+
+function SubscriptionCoverageNotice(props: {
+  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
+}) {
+  const pending = props.environments.filter((environment) => environment.isPending);
+  const failed = props.environments.filter((environment) => environment.error !== null);
+  if (pending.length === 0 && failed.length === 0) return null;
+
+  return (
+    <View className="gap-1 rounded-[16px] border-continuous bg-card px-4 py-3">
+      {pending.map((environment) => (
+        <Text key={environment.environmentId} className="text-sm text-foreground-muted">
+          {environment.label} is still reporting subscription limits.
+        </Text>
+      ))}
+      {failed.map((environment) => (
+        <Text key={environment.environmentId} className="text-sm text-foreground-muted">
+          {environment.label} could not report subscription limits.
+        </Text>
+      ))}
+      <Text className="text-sm text-foreground-muted">
+        Subscription coverage may be incomplete.
       </Text>
     </View>
   );

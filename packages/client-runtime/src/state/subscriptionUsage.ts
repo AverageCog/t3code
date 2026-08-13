@@ -1,14 +1,30 @@
 import type { EnvironmentId, ServerProvider } from "@t3tools/contracts";
+import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
 
 export interface SubscriptionEnvironmentProviders {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+  readonly connectionPhase: EnvironmentConnectionPhase;
   readonly providers: readonly ServerProvider[] | null;
+}
+
+export interface SubscriptionEnvironmentUsageStatus extends SubscriptionEnvironmentProviders {
+  readonly isPending: boolean;
+  readonly error: string | null;
 }
 
 export interface SubscriptionUsageStatus {
   readonly provider: ServerProvider;
   readonly sourceLabels: readonly string[];
+}
+
+export interface SubscriptionUsageState {
+  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
+  readonly statuses: readonly SubscriptionUsageStatus[];
+  /** True only while no environment has answered and at least one still can. */
+  readonly isPending: boolean;
+  /** True when loaded results are visible while another environment is still answering. */
+  readonly isPartial: boolean;
 }
 
 /** Produces a stable visual scramble while preserving email punctuation and width. */
@@ -52,6 +68,43 @@ export function expectedSubscriptionProvider(
   if (provider.driver === "claudeAgent") return "claude";
   if (provider.driver === "grok") return "grok";
   return undefined;
+}
+
+/**
+ * Separates each environment's loading and failure state so an unavailable
+ * remote never hides subscription data that another environment already sent.
+ */
+export function collectSubscriptionUsageState(
+  environments: readonly SubscriptionEnvironmentProviders[],
+): SubscriptionUsageState {
+  const environmentStatuses = environments.map((environment) => {
+    if (environment.connectionPhase === "connected") {
+      return {
+        ...environment,
+        isPending: environment.providers === null,
+        error: null,
+      };
+    }
+    if (environment.connectionPhase === "connecting") {
+      return { ...environment, isPending: true, error: null };
+    }
+    return {
+      ...environment,
+      isPending: false,
+      error: "This environment could not report subscription limits.",
+    };
+  });
+  const answeredCount = environmentStatuses.filter(
+    (environment) => environment.providers !== null,
+  ).length;
+  const pendingCount = environmentStatuses.filter((environment) => environment.isPending).length;
+
+  return {
+    environments: environmentStatuses,
+    statuses: collectSubscriptionUsageStatuses(environments),
+    isPending: answeredCount === 0 && pendingCount > 0,
+    isPartial: answeredCount > 0 && pendingCount > 0,
+  };
 }
 
 /**

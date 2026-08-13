@@ -37,6 +37,7 @@ import {
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
+import { optionalProviderEnrichment } from "../optionalProviderEnrichment.ts";
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
@@ -354,7 +355,7 @@ const probeGrokViaAcp = (
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
     const started = yield* acp.start();
-    const billing = yield* requestGrokSubscriptionUsage(acp.request).pipe(Effect.option);
+    const billing = yield* optionalProviderEnrichment(requestGrokSubscriptionUsage(acp.request));
     const subscriptionUsage = Option.isSome(billing) ? billing.value : undefined;
     return {
       models: buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models),

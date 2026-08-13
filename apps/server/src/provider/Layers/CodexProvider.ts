@@ -35,6 +35,7 @@ import {
 } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import packageJson from "../../../package.json" with { type: "json" };
+import { optionalProviderEnrichment } from "../optionalProviderEnrichment.ts";
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
@@ -450,7 +451,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       }),
       requestAllCodexModels(client),
       accountResponse.account?.type === "chatgpt"
-        ? client.request("account/rateLimits/read", undefined).pipe(Effect.option)
+        ? optionalProviderEnrichment(client.request("account/rateLimits/read", undefined))
         : Effect.succeed(Option.none<CodexSchema.V2GetAccountRateLimitsResponse>()),
     ],
     { concurrency: "unbounded" },

@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  collectSubscriptionUsageState,
   collectSubscriptionUsageStatuses,
   scrambleSubscriptionEmail,
 } from "./subscriptionUsage.ts";
@@ -51,8 +52,18 @@ describe("collectSubscriptionUsageStatuses", () => {
     });
 
     const result = collectSubscriptionUsageStatuses([
-      { environmentId: "local" as EnvironmentId, label: "Mac", providers: [older] },
-      { environmentId: "remote" as EnvironmentId, label: "Server", providers: [newer] },
+      {
+        environmentId: "local" as EnvironmentId,
+        label: "Mac",
+        connectionPhase: "connected",
+        providers: [older],
+      },
+      {
+        environmentId: "remote" as EnvironmentId,
+        label: "Server",
+        connectionPhase: "connected",
+        providers: [newer],
+      },
     ]);
 
     expect(result).toHaveLength(1);
@@ -65,6 +76,7 @@ describe("collectSubscriptionUsageStatuses", () => {
       {
         environmentId: "local" as EnvironmentId,
         label: "Mac",
+        connectionPhase: "connected",
         providers: [
           provider("personal"),
           provider("work", {
@@ -99,8 +111,18 @@ describe("collectSubscriptionUsageStatuses", () => {
     });
 
     const result = collectSubscriptionUsageStatuses([
-      { environmentId: "local" as EnvironmentId, label: "Mac", providers: [grok] },
-      { environmentId: "remote" as EnvironmentId, label: "Server", providers: [grok] },
+      {
+        environmentId: "local" as EnvironmentId,
+        label: "Mac",
+        connectionPhase: "connected",
+        providers: [grok],
+      },
+      {
+        environmentId: "remote" as EnvironmentId,
+        label: "Server",
+        connectionPhase: "connected",
+        providers: [grok],
+      },
     ]);
 
     expect(result).toHaveLength(2);
@@ -134,13 +156,105 @@ describe("collectSubscriptionUsageStatuses", () => {
     });
 
     const result = collectSubscriptionUsageStatuses([
-      { environmentId: "local" as EnvironmentId, label: "Mac", providers: [claude] },
-      { environmentId: "remote" as EnvironmentId, label: "Server", providers: [claude] },
+      {
+        environmentId: "local" as EnvironmentId,
+        label: "Mac",
+        connectionPhase: "connected",
+        providers: [claude],
+      },
+      {
+        environmentId: "remote" as EnvironmentId,
+        label: "Server",
+        connectionPhase: "connected",
+        providers: [claude],
+      },
     ]);
 
     expect(result).toHaveLength(1);
     expect(result[0]?.provider.subscriptionUsage?.provider).toBe("claude");
     expect(result[0]?.sourceLabels).toEqual(["Mac", "Server"]);
+  });
+});
+
+describe("collectSubscriptionUsageState", () => {
+  it("keeps loaded cards visible while another environment is still connecting", () => {
+    const loaded = provider("personal", {
+      subscriptionUsage: { provider: "chatgpt", plan: "plus", windows: [] },
+    });
+    const state = collectSubscriptionUsageState([
+      {
+        environmentId: "local" as EnvironmentId,
+        label: "Mac",
+        connectionPhase: "connected",
+        providers: [loaded],
+      },
+      {
+        environmentId: "remote" as EnvironmentId,
+        label: "Server",
+        connectionPhase: "connecting",
+        providers: null,
+      },
+    ]);
+
+    expect(state.statuses.map((status) => status.provider)).toEqual([loaded]);
+    expect(state.isPending).toBe(false);
+    expect(state.isPartial).toBe(true);
+    expect(state.environments[1]).toMatchObject({ isPending: true, error: null });
+  });
+
+  it("reports an offline environment without leaving the whole view pending", () => {
+    const state = collectSubscriptionUsageState([
+      {
+        environmentId: "remote" as EnvironmentId,
+        label: "Server",
+        connectionPhase: "offline",
+        providers: null,
+      },
+    ]);
+
+    expect(state.isPending).toBe(false);
+    expect(state.isPartial).toBe(false);
+    expect(state.environments[0]?.isPending).toBe(false);
+    expect(state.environments[0]?.error).toContain("could not report");
+  });
+
+  it("keeps a stale offline snapshot visible but marks its coverage unavailable", () => {
+    const loaded = provider("personal", {
+      subscriptionUsage: { provider: "chatgpt", plan: "plus", windows: [] },
+    });
+    const state = collectSubscriptionUsageState([
+      {
+        environmentId: "remote" as EnvironmentId,
+        label: "Server",
+        connectionPhase: "offline",
+        providers: [loaded],
+      },
+    ]);
+
+    expect(state.statuses[0]?.provider).toBe(loaded);
+    expect(state.isPending).toBe(false);
+    expect(state.environments[0]?.error).toContain("could not report");
+  });
+
+  it("treats a completed provider warning as a loaded terminal result", () => {
+    const warning = provider("claude", {
+      driver: ProviderDriverKind.make("claudeAgent"),
+      status: "warning",
+      auth: { status: "unknown" },
+      message: "Could not verify Claude authentication status from initialization result.",
+    });
+    const state = collectSubscriptionUsageState([
+      {
+        environmentId: "local" as EnvironmentId,
+        label: "Mac",
+        connectionPhase: "connected",
+        providers: [warning],
+      },
+    ]);
+
+    expect(state.statuses[0]?.provider).toBe(warning);
+    expect(state.isPending).toBe(false);
+    expect(state.environments[0]).toMatchObject({ isPending: false, error: null });
   });
 });
 

@@ -1,6 +1,7 @@
 import {
   expectedSubscriptionProvider,
   scrambleSubscriptionEmail,
+  type SubscriptionEnvironmentUsageStatus,
   type SubscriptionUsageStatus,
 } from "@t3tools/client-runtime/state/subscription-usage";
 import type {
@@ -230,6 +231,7 @@ export function UsagePage() {
 
             {activeView === "subscriptions" ? (
               <SubscriptionUsagePanel
+                environments={subscriptions.environments}
                 statuses={subscriptions.statuses}
                 isPending={subscriptions.isPending}
                 history={subscriptionHistory.merged}
@@ -538,19 +540,19 @@ function subscriptionPlanLabel(
 }
 
 function subscriptionWindowLabel(window: SubscriptionUsageWindow): string {
-  if (window.kind === "weekly") return "Weekly limit";
-  if (window.kind === "monthly") return "Monthly limit";
-  if (window.windowDurationMinutes === 300) return "5-hour limit";
-  if (window.windowDurationMinutes === 10_080) return "Weekly limit";
-  if (window.windowDurationMinutes !== null) {
+  let label: string;
+  if (window.kind === "weekly") label = "Weekly limit";
+  else if (window.kind === "monthly") label = "Monthly limit";
+  else if (window.windowDurationMinutes === 300) label = "5-hour limit";
+  else if (window.windowDurationMinutes === 10_080) label = "Weekly limit";
+  else if (window.windowDurationMinutes !== null) {
     if (window.windowDurationMinutes % 1_440 === 0) {
-      return `${window.windowDurationMinutes / 1_440}-day limit`;
-    }
-    if (window.windowDurationMinutes % 60 === 0) {
-      return `${window.windowDurationMinutes / 60}-hour limit`;
-    }
-  }
-  return window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+      label = `${window.windowDurationMinutes / 1_440}-day limit`;
+    } else if (window.windowDurationMinutes % 60 === 0) {
+      label = `${window.windowDurationMinutes / 60}-hour limit`;
+    } else label = window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+  } else label = window.kind === "primary" ? "5-hour limit" : "Weekly limit";
+  return window.scope ? `${window.scope.label} ${label.toLocaleLowerCase()}` : label;
 }
 
 function subscriptionUnavailableMessage(provider: ServerProvider): string {
@@ -596,6 +598,7 @@ function subscriptionResetLabel(resetsAt: string | null): string {
 }
 
 function SubscriptionUsagePanel({
+  environments,
   statuses,
   isPending,
   history,
@@ -604,6 +607,7 @@ function SubscriptionUsagePanel({
   hasHistoryResponse,
   isHistoryIncomplete,
 }: {
+  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
   readonly statuses: readonly SubscriptionUsageStatus[];
   readonly isPending: boolean;
   readonly history: MergedUsage;
@@ -639,17 +643,21 @@ function SubscriptionUsagePanel({
 
   if (statuses.length === 0) {
     return (
-      <section className="border border-border px-5 py-8 text-center">
-        <h2 className="text-sm font-medium text-foreground">No supported provider configured</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Enable Codex, Claude, or Grok and sign in to see subscription limits here.
-        </p>
-      </section>
+      <div className="flex flex-col gap-4">
+        <SubscriptionCoverageNotice environments={environments} />
+        <section className="border border-border px-5 py-8 text-center">
+          <h2 className="text-sm font-medium text-foreground">No supported provider configured</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Enable Codex, Claude, or Grok and sign in to see subscription limits here.
+          </p>
+        </section>
+      </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <SubscriptionCoverageNotice environments={environments} />
       <section className="grid gap-4 md:grid-cols-2">
         {statuses.map((status) => {
           const { provider } = status;
@@ -711,7 +719,10 @@ function SubscriptionUsagePanel({
                   {usage.windows.map((window) => {
                     const remainingPercent = Math.max(0, 100 - window.usedPercent);
                     return (
-                      <div key={window.kind} className="flex flex-col gap-2">
+                      <div
+                        key={`${window.kind}:${window.scope?.type ?? "overall"}:${window.scope?.id ?? "all"}`}
+                        className="flex flex-col gap-2"
+                      >
                         <div className="flex items-baseline justify-between gap-3">
                           <span className="text-sm text-foreground">
                             {subscriptionWindowLabel(window)}
@@ -823,6 +834,32 @@ function SubscriptionUsagePanel({
         Token history is combined by provider across connected environments and may not match one
         account's limits.
       </p>
+    </div>
+  );
+}
+
+function SubscriptionCoverageNotice({
+  environments,
+}: {
+  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
+}) {
+  const pending = environments.filter((environment) => environment.isPending);
+  const failed = environments.filter((environment) => environment.error !== null);
+  if (pending.length === 0 && failed.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-1 border border-border px-3 py-2 text-xs text-muted-foreground">
+      {pending.map((environment) => (
+        <span key={environment.environmentId}>
+          {environment.label} is still reporting subscription limits.
+        </span>
+      ))}
+      {failed.map((environment) => (
+        <span key={environment.environmentId}>
+          {environment.label} could not report subscription limits.
+        </span>
+      ))}
+      <span>Subscription coverage may be incomplete.</span>
     </div>
   );
 }

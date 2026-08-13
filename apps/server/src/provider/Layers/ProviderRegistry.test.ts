@@ -1804,7 +1804,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
     // ── checkClaudeProviderStatus tests ──────────────────────────
 
     describe("checkClaudeProviderStatus", () => {
-      it("maps Claude's five-hour and weekly subscription windows", () => {
+      it("maps Claude's overall and scoped subscription windows", () => {
         assert.deepStrictEqual(
           mapClaudeSubscriptionUsage({
             subscription_type: "max",
@@ -1817,6 +1817,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               seven_day: {
                 utilization: 67,
                 resets_at: "2026-04-17T00:00:00Z",
+              },
+              seven_day_oauth_apps: {
+                utilization: 23,
+                resets_at: "2026-04-16T00:00:00Z",
+              },
+              seven_day_opus: {
+                utilization: 100,
+                resets_at: "2026-04-15T00:00:00Z",
+              },
+              seven_day_sonnet: {
+                utilization: 81,
+                resets_at: "2026-04-14T00:00:00Z",
               },
             },
           }),
@@ -1835,6 +1847,27 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 usedPercent: 67,
                 windowDurationMinutes: 10_080,
                 resetsAt: "2026-04-17T00:00:00.000Z",
+              },
+              {
+                kind: "weekly",
+                scope: { type: "feature", id: "oauth_apps", label: "OAuth apps" },
+                usedPercent: 23,
+                windowDurationMinutes: 10_080,
+                resetsAt: "2026-04-16T00:00:00.000Z",
+              },
+              {
+                kind: "weekly",
+                scope: { type: "model", id: "opus", label: "Opus" },
+                usedPercent: 100,
+                windowDurationMinutes: 10_080,
+                resetsAt: "2026-04-15T00:00:00.000Z",
+              },
+              {
+                kind: "weekly",
+                scope: { type: "model", id: "sonnet", label: "Sonnet" },
+                usedPercent: 81,
+                windowDurationMinutes: 10_080,
+                resetsAt: "2026-04-14T00:00:00.000Z",
               },
             ],
           },
