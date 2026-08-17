@@ -67,8 +67,11 @@ export function UsageRouteScreen() {
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
-  const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
-  const subscriptionHistory = useUsage(subscriptionWindow);
+  const { merged, environments, isPending, isPartial, refresh } = useUsage(
+    window,
+    activeView === "history",
+  );
+  const subscriptionHistory = useUsage(subscriptionWindow, activeView === "subscriptions");
   const subscriptions = useSubscriptionUsage();
 
   const days = useMemo(
@@ -509,7 +512,7 @@ function SubscriptionUsageContent(props: {
                   accessibilityLabel={
                     emailIsConcealed ? "Reveal account email" : "Hide account email"
                   }
-                  accessibilityState={{ selected: emailIsConcealed }}
+                  accessibilityState={{ selected: !emailIsConcealed }}
                   onPress={() => toggleEmail(emailKey)}
                 >
                   <Text

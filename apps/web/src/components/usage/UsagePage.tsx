@@ -33,6 +33,7 @@ import {
 import { ScrollArea } from "../ui/scroll-area";
 import { Button } from "../ui/button";
 import { SidebarInset } from "../ui/sidebar";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../WorkspaceBreadcrumb";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "../../workspaceTitlebar";
 import { UsageChartLegend, UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
@@ -56,8 +57,11 @@ export function UsagePage() {
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
-  const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
-  const subscriptionHistory = useUsage(subscriptionWindow);
+  const { merged, environments, isPending, isPartial, refresh } = useUsage(
+    window,
+    activeView === "history",
+  );
+  const subscriptionHistory = useUsage(subscriptionWindow, activeView === "subscriptions");
   const subscriptions = useSubscriptionUsage();
 
   // Hold the content until every environment is terminal. Rendering merged
@@ -809,19 +813,29 @@ function SubscriptionUsagePanel({
 
               {email && emailKey ? (
                 <div className="mt-auto border-t border-border pt-3 text-xs text-muted-foreground">
-                  <button
-                    type="button"
-                    aria-label={emailIsConcealed ? "Reveal account email" : "Hide account email"}
-                    aria-pressed={emailIsConcealed}
-                    title={emailIsConcealed ? "Reveal account email" : "Hide account email"}
-                    onClick={() => toggleEmail(emailKey)}
-                    className={cn(
-                      "cursor-pointer select-none rounded-sm outline-none transition-[filter] focus-visible:ring-2 focus-visible:ring-ring",
-                      emailIsConcealed && "blur-[2px]",
-                    )}
-                  >
-                    {emailIsConcealed ? scrambleSubscriptionEmail(email) : email}
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          aria-label={
+                            emailIsConcealed ? "Reveal account email" : "Hide account email"
+                          }
+                          aria-pressed={!emailIsConcealed}
+                          onClick={() => toggleEmail(emailKey)}
+                          className={cn(
+                            "cursor-pointer select-none rounded-sm outline-none transition-[filter] focus-visible:ring-2 focus-visible:ring-ring",
+                            emailIsConcealed && "blur-[2px]",
+                          )}
+                        />
+                      }
+                    >
+                      {emailIsConcealed ? scrambleSubscriptionEmail(email) : email}
+                    </TooltipTrigger>
+                    <TooltipPopup side="top">
+                      {emailIsConcealed ? "Reveal account email" : "Hide account email"}
+                    </TooltipPopup>
+                  </Tooltip>
                 </div>
               ) : null}
             </article>

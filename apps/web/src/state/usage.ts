@@ -62,6 +62,10 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
   }).pipe(Atom.withLabel(`web-usage:window:${windowKey}`)),
 );
 
+const inactiveUsageAtom = Atom.make((): readonly EnvironmentUsageStatus[] => []).pipe(
+  Atom.withLabel("web-usage:inactive"),
+);
+
 export interface UsageView {
   readonly merged: MergedUsage;
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -125,7 +129,7 @@ export function useSubscriptionUsage() {
   };
 }
 
-export function useUsage(input: UsageSummaryInput): UsageView {
+export function useUsage(input: UsageSummaryInput, active = true): UsageView {
   const windowKey = useMemo(
     () =>
       JSON.stringify({
@@ -145,7 +149,7 @@ export function useUsage(input: UsageSummaryInput): UsageView {
       input.untilTime,
     ],
   );
-  const atom = usageByWindowAtom(windowKey);
+  const atom = active ? usageByWindowAtom(windowKey) : inactiveUsageAtom;
   const environments = useAtomValue(atom);
 
   // Refreshing only the derived atom would re-read the per-environment SWR
