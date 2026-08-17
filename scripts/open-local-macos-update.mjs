@@ -1,20 +1,24 @@
-import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
-import path from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as Effect from "effect/Effect";
 
-if (process.platform !== "darwin") {
+if (Effect.runSync(HostProcessPlatform) !== "darwin") {
   throw new Error("update:desktop:mac can only run on macOS.");
 }
 
-const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : undefined;
+const hostArchitecture = Effect.runSync(HostProcessArchitecture);
+const arch =
+  hostArchitecture === "arm64" ? "arm64" : hostArchitecture === "x64" ? "x64" : undefined;
 if (!arch) {
-  throw new Error(`Unsupported Mac architecture: ${process.arch}`);
+  throw new Error(`Unsupported Mac architecture: ${hostArchitecture}`);
 }
 
-const repoRoot = path.resolve(import.meta.dirname, "..");
+const repoRoot = NodePath.resolve(import.meta.dirname, "..");
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
+  const result = NodeChildProcess.spawnSync(command, args, {
     cwd: repoRoot,
     stdio: "inherit",
     ...options,
@@ -26,7 +30,7 @@ function run(command, args, options = {}) {
 }
 
 function capture(command, args) {
-  const result = spawnSync(command, args, {
+  const result = NodeChildProcess.spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
   });
@@ -91,8 +95,8 @@ run("git", ["push", "origin", "main"]);
 const updateRepository = resolveGitHubRepository(capture("git", ["remote", "get-url", "origin"]));
 const releaseVersion = createReleaseVersion(new Date());
 const releaseTag = `fork-v${releaseVersion}`;
-const outputDir = path.join(repoRoot, "release", "local-macos-update", releaseVersion);
-const dmgPath = path.join(outputDir, `T3-Code-${releaseVersion}-${arch}.dmg`);
+const outputDir = NodePath.join(repoRoot, "release", "local-macos-update", releaseVersion);
+const dmgPath = NodePath.join(outputDir, `T3-Code-${releaseVersion}-${arch}.dmg`);
 
 console.log(`Building the ${arch} macOS installer...`);
 run(
@@ -118,7 +122,7 @@ run(
   },
 );
 
-const releaseAssets = readdirSync(outputDir)
+const releaseAssets = NodeFS.readdirSync(outputDir)
   .filter(
     (name) =>
       name === "latest-mac.yml" ||
@@ -126,7 +130,7 @@ const releaseAssets = readdirSync(outputDir)
       name.endsWith(".zip") ||
       name.endsWith(".blockmap"),
   )
-  .map((name) => path.join(outputDir, name));
+  .map((name) => NodePath.join(outputDir, name));
 
 if (!releaseAssets.some((assetPath) => assetPath.endsWith("latest-mac.yml"))) {
   throw new Error("The build did not produce latest-mac.yml for the custom update feed.");

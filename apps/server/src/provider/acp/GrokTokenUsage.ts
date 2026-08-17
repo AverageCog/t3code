@@ -263,12 +263,12 @@ export function estimateGrokContextTokensUsed(usage: GrokTurnUsageTotals): numbe
 
 export function snapshotFromGrokTurnUsage(input: {
   readonly usage: unknown;
-  readonly modelId?: string | null;
+  readonly modelId?: string | null | undefined;
   readonly occupancy?: {
     readonly usedTokens?: number;
     readonly maxTokens?: number;
   };
-  readonly lastKnownMaxTokens?: number;
+  readonly lastKnownMaxTokens?: number | undefined;
 }): ThreadTokenUsageSnapshot | undefined {
   const totals = parseGrokTurnUsageTotals(input.usage);
   const occupancy = input.occupancy ?? extractGrokContextWindow(input.usage);
@@ -368,8 +368,8 @@ export function unwrapXAiSessionUpdate(payload: unknown): ParsedXAiSessionUpdate
 
 export function snapshotFromXAiSessionUpdate(input: {
   readonly payload: unknown;
-  readonly modelId?: string | null;
-  readonly lastKnownMaxTokens?: number;
+  readonly modelId?: string | null | undefined;
+  readonly lastKnownMaxTokens?: number | undefined;
 }): ThreadTokenUsageSnapshot | undefined {
   const parsed = unwrapXAiSessionUpdate(input.payload);
   if (!parsed) {

@@ -1,7 +1,8 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import * as path from "node:path";
-import { describe, expect, it } from "vitest";
+// @effect-diagnostics nodeBuiltinImport:off - tests exercise the synchronous macOS updater filesystem boundary.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildUnsignedMacInstallScript,
@@ -33,22 +34,24 @@ describe("unsignedMacInstall", () => {
   });
 
   it("prefers update.zip over a pending zip", () => {
-    const cacheDir = mkdtempSync(path.join(tmpdir(), "t3-updater-cache-"));
-    const pendingDir = path.join(cacheDir, "pending");
-    mkdirSync(pendingDir);
-    writeFileSync(path.join(pendingDir, "T3-Code-1.zip"), "pending");
-    writeFileSync(path.join(cacheDir, "update.zip"), "complete");
+    const cacheDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-updater-cache-"));
+    const pendingDir = NodePath.join(cacheDir, "pending");
+    NodeFS.mkdirSync(pendingDir);
+    NodeFS.writeFileSync(NodePath.join(pendingDir, "T3-Code-1.zip"), "pending");
+    NodeFS.writeFileSync(NodePath.join(cacheDir, "update.zip"), "complete");
 
-    expect(resolveDownloadedMacUpdateZip(cacheDir)).toBe(path.join(cacheDir, "update.zip"));
+    expect(resolveDownloadedMacUpdateZip(cacheDir)).toBe(NodePath.join(cacheDir, "update.zip"));
   });
 
   it("falls back to the pending zip when update.zip is missing", () => {
-    const cacheDir = mkdtempSync(path.join(tmpdir(), "t3-updater-cache-"));
-    const pendingDir = path.join(cacheDir, "pending");
-    mkdirSync(pendingDir);
-    writeFileSync(path.join(pendingDir, "T3-Code-1.zip"), "pending");
+    const cacheDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-updater-cache-"));
+    const pendingDir = NodePath.join(cacheDir, "pending");
+    NodeFS.mkdirSync(pendingDir);
+    NodeFS.writeFileSync(NodePath.join(pendingDir, "T3-Code-1.zip"), "pending");
 
-    expect(resolveDownloadedMacUpdateZip(cacheDir)).toBe(path.join(pendingDir, "T3-Code-1.zip"));
+    expect(resolveDownloadedMacUpdateZip(cacheDir)).toBe(
+      NodePath.join(pendingDir, "T3-Code-1.zip"),
+    );
   });
 
   it("builds the updater cache path under Library/Caches", () => {

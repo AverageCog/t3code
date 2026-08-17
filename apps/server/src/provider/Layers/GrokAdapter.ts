@@ -85,6 +85,9 @@ import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const encodeUnknownJsonStringExit = Schema.encodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
+const decodeUnknownJsonStringOption = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Unknown),
+);
 
 const PROVIDER = ProviderDriverKind.make("grok");
 const GROK_RESUME_VERSION = 1 as const;
@@ -116,6 +119,7 @@ interface PendingUserInput {
 interface GrokSessionContext {
   readonly threadId: ThreadId;
   readonly acpSessionId: string;
+  readonly cwd: string;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntime.AcpSessionRuntime["Service"];
@@ -350,7 +354,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
       const signalsPath = resolveGrokSignalsFilePath({
         grokHome: resolveGrokHomePath(options?.environment),
-        cwd: ctx.session.cwd,
+        cwd: ctx.cwd,
         sessionId: ctx.acpSessionId,
       });
       const signalsRaw = yield* fileSystem
@@ -359,10 +363,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       if (signalsRaw === undefined) {
         return;
       }
-      let signals: unknown;
-      try {
-        signals = JSON.parse(signalsRaw);
-      } catch {
+      const signals = Option.getOrUndefined(decodeUnknownJsonStringOption(signalsRaw));
+      if (signals === undefined) {
         return;
       }
       const occupancy = extractGrokContextWindow(signals);
@@ -920,6 +922,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const ctx: GrokSessionContext = {
             threadId: input.threadId,
             acpSessionId: started.sessionId,
+            cwd,
             session,
             scope: sessionScope,
             acp,

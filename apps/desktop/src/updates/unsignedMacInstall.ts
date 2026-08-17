@@ -1,16 +1,17 @@
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
-import * as path from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off - Electron updater callbacks and detached installer handoff are synchronous OS boundaries.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 export type MacCodeSignatureKind = "developer-id" | "adhoc" | "unknown";
 
 export function resolveMacAppBundlePath(appPath: string): string | undefined {
-  const parts = appPath.split(path.sep);
+  const parts = appPath.split(NodePath.posix.sep);
   const index = parts.findIndex((part) => part.endsWith(".app"));
   if (index < 0) {
     return undefined;
   }
-  return parts.slice(0, index + 1).join(path.sep);
+  return parts.slice(0, index + 1).join(NodePath.posix.sep);
 }
 
 export function classifyMacCodesignOutput(output: string): MacCodeSignatureKind {
@@ -24,26 +25,26 @@ export function classifyMacCodesignOutput(output: string): MacCodeSignatureKind 
 }
 
 export function inspectMacAppSignature(bundlePath: string): MacCodeSignatureKind {
-  const result = spawnSync("codesign", ["-dv", "--verbose=2", bundlePath], {
+  const result = NodeChildProcess.spawnSync("codesign", ["-dv", "--verbose=2", bundlePath], {
     encoding: "utf8",
   });
   return classifyMacCodesignOutput(`${result.stdout}\n${result.stderr}`);
 }
 
 export function resolveDownloadedMacUpdateZip(cacheDir: string): string | undefined {
-  const updateZip = path.join(cacheDir, "update.zip");
-  if (existsSync(updateZip)) {
+  const updateZip = NodePath.join(cacheDir, "update.zip");
+  if (NodeFS.existsSync(updateZip)) {
     return updateZip;
   }
 
-  const pendingDir = path.join(cacheDir, "pending");
-  if (!existsSync(pendingDir)) {
+  const pendingDir = NodePath.join(cacheDir, "pending");
+  if (!NodeFS.existsSync(pendingDir)) {
     return undefined;
   }
 
-  const pendingZip = readdirSync(pendingDir)
+  const pendingZip = NodeFS.readdirSync(pendingDir)
     .filter((name) => name.endsWith(".zip"))
-    .map((name) => path.join(pendingDir, name))
+    .map((name) => NodePath.join(pendingDir, name))
     .at(0);
   return pendingZip;
 }
@@ -52,7 +53,7 @@ export function resolveMacUpdaterCacheDir(
   homeDirectory: string,
   updaterCacheDirName: string,
 ): string {
-  return path.join(homeDirectory, "Library", "Caches", updaterCacheDirName);
+  return NodePath.posix.join(homeDirectory, "Library", "Caches", updaterCacheDirName);
 }
 
 export function buildUnsignedMacInstallScript(): string {
@@ -85,7 +86,7 @@ export function spawnUnsignedMacInstaller(options: {
   readonly zipPath: string;
   readonly destAppPath: string;
 }): void {
-  const child = spawn(
+  const child = NodeChildProcess.spawn(
     "/bin/bash",
     [
       "-c",
