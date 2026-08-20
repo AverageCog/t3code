@@ -308,12 +308,16 @@ export function buildGrokSubscriptionUsageFromBilling(
   const directPercent = config.creditUsagePercent;
   const legacyLimit = Math.abs(config.monthlyLimit?.val ?? 0);
   const legacyUsed = Math.abs(config.used?.val ?? 0);
+  // GetGrokCreditsConfig omits zero-valued proto3 scalars, so a current period
+  // without creditUsagePercent represents 0% usage rather than an unknown limit.
   const usedPercent =
     typeof directPercent === "number" && Number.isFinite(directPercent)
       ? directPercent
       : legacyLimit > 0 && Number.isFinite(legacyUsed)
         ? (legacyUsed / legacyLimit) * 100
-        : undefined;
+        : currentPeriod
+          ? 0
+          : undefined;
 
   if (!kind || usedPercent === undefined) {
     return { provider: "grok", plan, windows: [] };

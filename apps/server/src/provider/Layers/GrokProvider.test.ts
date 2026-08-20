@@ -184,6 +184,32 @@ describe("buildGrokSubscriptionUsageFromBilling", () => {
     });
   });
 
+  it("treats an omitted current-period percentage as zero usage", () => {
+    expect(
+      buildGrokSubscriptionUsageFromBilling({
+        subscription_tier: "SuperGrok",
+        config: {
+          currentPeriod: {
+            type: "USAGE_PERIOD_TYPE_WEEKLY",
+            start: "2026-08-17T00:00:00Z",
+            end: "2026-08-24T00:00:00Z",
+          },
+        },
+      }),
+    ).toEqual({
+      provider: "grok",
+      plan: "SuperGrok",
+      windows: [
+        {
+          kind: "weekly",
+          usedPercent: 0,
+          windowDurationMinutes: 10_080,
+          resetsAt: "2026-08-24T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+
   it.effect("uses Grok's wire-prefixed ACP method and stable response shape", () =>
     Effect.gen(function* () {
       const requests: Array<{ readonly method: string; readonly payload: unknown }> = [];
