@@ -61,6 +61,46 @@ export const ServerProviderAuth = Schema.Struct({
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
+export const SubscriptionUsageProvider = Schema.Literals(["chatgpt", "claude", "grok"]);
+export type SubscriptionUsageProvider = typeof SubscriptionUsageProvider.Type;
+
+export const SubscriptionUsageWindowKind = Schema.Literals([
+  "primary",
+  "secondary",
+  "weekly",
+  "monthly",
+]);
+export type SubscriptionUsageWindowKind = typeof SubscriptionUsageWindowKind.Type;
+
+export const SubscriptionUsageWindowScope = Schema.Struct({
+  type: Schema.Literals(["model", "feature"]),
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+});
+export type SubscriptionUsageWindowScope = typeof SubscriptionUsageWindowScope.Type;
+
+/** One provider-reported rolling subscription quota window. */
+export const SubscriptionUsageWindow = Schema.Struct({
+  kind: SubscriptionUsageWindowKind,
+  scope: Schema.optionalKey(SubscriptionUsageWindowScope),
+  usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  windowDurationMinutes: Schema.NullOr(NonNegativeInt),
+  resetsAt: Schema.NullOr(IsoDateTime),
+});
+export type SubscriptionUsageWindow = typeof SubscriptionUsageWindow.Type;
+
+/**
+ * Provider-reported subscription quota attached to a provider health snapshot.
+ * An empty `windows` array means the account supports quota reads but did not
+ * report any rolling windows in its latest response.
+ */
+export const ProviderSubscriptionUsage = Schema.Struct({
+  provider: SubscriptionUsageProvider,
+  plan: Schema.NullOr(TrimmedNonEmptyString),
+  windows: Schema.Array(SubscriptionUsageWindow),
+});
+export type ProviderSubscriptionUsage = typeof ProviderSubscriptionUsage.Type;
+
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
@@ -176,6 +216,7 @@ export const ServerProvider = Schema.Struct({
   version: Schema.NullOr(TrimmedNonEmptyString),
   status: ServerProviderState,
   auth: ServerProviderAuth,
+  subscriptionUsage: Schema.optionalKey(ProviderSubscriptionUsage),
   checkedAt: IsoDateTime,
   message: Schema.optional(TrimmedNonEmptyString),
   // Optional for back-compat: every legacy producer omits this field and

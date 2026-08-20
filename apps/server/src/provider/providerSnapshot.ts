@@ -3,6 +3,7 @@ import type {
   ModelCapabilities,
   ServerProvider,
   ServerProviderAuth,
+  ProviderSubscriptionUsage,
   ServerProviderSkill,
   ServerProviderSlashCommand,
   ServerProviderModel,
@@ -221,6 +222,7 @@ export function buildServerProvider(input: {
   models: ReadonlyArray<ServerProviderModel>;
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  subscriptionUsage?: ProviderSubscriptionUsage;
   probe: ProviderProbeResult;
 }): ServerProviderDraft {
   const versionAdvisory = input.driver
@@ -244,6 +246,7 @@ export function buildServerProvider(input: {
     version: input.probe.version,
     status: input.enabled ? input.probe.status : "disabled",
     auth: input.probe.auth,
+    ...(input.subscriptionUsage ? { subscriptionUsage: input.subscriptionUsage } : {}),
     checkedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
     models: input.models,

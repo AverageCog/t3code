@@ -8,6 +8,10 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
+  collectSubscriptionUsageState,
+  type SubscriptionEnvironmentProviders,
+} from "@t3tools/client-runtime/state/subscription-usage";
+import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageSummary,
@@ -15,12 +19,13 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
+import { useAtomCommand } from "./use-atom-command";
 
 export interface EnvironmentUsageStatus {
   readonly environmentId: EnvironmentId;
@@ -57,6 +62,10 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
   }).pipe(Atom.withLabel(`web-usage:window:${windowKey}`)),
 );
 
+const inactiveUsageAtom = Atom.make((): readonly EnvironmentUsageStatus[] => []).pipe(
+  Atom.withLabel("web-usage:inactive"),
+);
+
 export interface UsageView {
   readonly merged: MergedUsage;
   readonly environments: readonly EnvironmentUsageStatus[];
@@ -71,7 +80,56 @@ export interface UsageView {
   readonly refresh: () => void;
 }
 
-export function useUsage(input: UsageSummaryInput): UsageView {
+const subscriptionUsageAtom = Atom.make((get) => {
+  const presentations = get(environmentPresentations.presentationsAtom);
+  const environments: SubscriptionEnvironmentProviders[] = [];
+  for (const [environmentId, presentation] of presentations) {
+    environments.push({
+      environmentId,
+      label: presentation.entry.target.label,
+      connectionPhase: presentation.connection.phase,
+      providers: get(serverEnvironment.providersValueAtom(environmentId)),
+    });
+  }
+
+  return collectSubscriptionUsageState(environments);
+}).pipe(Atom.withLabel("web-usage:subscriptions"));
+
+export function useSubscriptionUsage() {
+  const state = useAtomValue(subscriptionUsageAtom);
+  const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
+
+  const refresh = useCallback(async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    setIsRefreshing(true);
+    try {
+      await Promise.all(
+        state.environments.map((environment) =>
+          refreshProviders({ environmentId: environment.environmentId, input: {} }),
+        ),
+      );
+    } finally {
+      refreshingRef.current = false;
+      setIsRefreshing(false);
+    }
+  }, [refreshProviders, state.environments]);
+
+  return {
+    environments: state.environments,
+    statuses: state.statuses,
+    isPending: state.isPending,
+    isPartial: state.isPartial,
+    isRefreshing,
+    refresh,
+  };
+}
+
+export function useUsage(input: UsageSummaryInput, active = true): UsageView {
   const windowKey = useMemo(
     () =>
       JSON.stringify({
@@ -91,7 +149,7 @@ export function useUsage(input: UsageSummaryInput): UsageView {
       input.untilTime,
     ],
   );
-  const atom = usageByWindowAtom(windowKey);
+  const atom = active ? usageByWindowAtom(windowKey) : inactiveUsageAtom;
   const environments = useAtomValue(atom);
 
   // Refreshing only the derived atom would re-read the per-environment SWR

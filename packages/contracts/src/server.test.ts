@@ -92,6 +92,71 @@ describe("ServerProvider", () => {
     expect(parsed.continuation?.groupKey).toBe("codex:home:/Users/julius/.codex");
   });
 
+  it("decodes provider-reported subscription usage windows", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      subscriptionUsage: {
+        provider: "chatgpt",
+        plan: "plus",
+        windows: [
+          {
+            kind: "primary",
+            usedPercent: 37,
+            windowDurationMinutes: 300,
+            resetsAt: "2026-04-10T05:00:00.000Z",
+          },
+          {
+            kind: "secondary",
+            scope: { type: "model", id: "opus", label: "Opus" },
+            usedPercent: 64,
+            windowDurationMinutes: 10_080,
+            resetsAt: "2026-04-17T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    expect(parsed.subscriptionUsage).toEqual({
+      provider: "chatgpt",
+      plan: "plus",
+      windows: [
+        {
+          kind: "primary",
+          usedPercent: 37,
+          windowDurationMinutes: 300,
+          resetsAt: "2026-04-10T05:00:00.000Z",
+        },
+        {
+          kind: "secondary",
+          scope: { type: "model", id: "opus", label: "Opus" },
+          usedPercent: 64,
+          windowDurationMinutes: 10_080,
+          resetsAt: "2026-04-17T00:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("decodes provider-named subscription usage windows", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      subscriptionUsage: {
+        provider: "grok",
+        plan: "SuperGrok Heavy",
+        windows: [
+          {
+            kind: "weekly",
+            usedPercent: 42.5,
+            windowDurationMinutes: 10_080,
+            resetsAt: "2026-06-08T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    expect(parsed.subscriptionUsage?.windows[0]?.kind).toBe("weekly");
+  });
+
   it("decodes optional legacy model metadata", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",
