@@ -10,12 +10,14 @@ import type {
   SubscriptionUsageWindow,
   UsageProviderKind,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { CheckIcon, RefreshCwIcon, XIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { DailyTotals, HourlyTotals, MergedUsage } from "@t3tools/shared/usageMerge";
 
 import { isElectron } from "../../env";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { cn } from "../../lib/utils";
 import { useSubscriptionUsage, useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import {
@@ -29,6 +31,9 @@ import {
   formatTokens,
   formatUsd,
   makeWindow,
+  DEFAULT_USAGE_PAGE_SELECTION,
+  USAGE_PAGE_SELECTIONS,
+  type UsageHistoryDays,
 } from "@t3tools/shared/usageFormat";
 import { ScrollArea } from "../ui/scroll-area";
 import { Button } from "../ui/button";
@@ -46,12 +51,23 @@ const WINDOW_OPTIONS = [
   { days: 90, label: "90 days" },
 ] as const;
 
+const USAGE_PAGE_SELECTION_STORAGE_KEY = "t3code:usage-page-selection:v1";
+const UsagePageSelectionSchema = Schema.Literals(USAGE_PAGE_SELECTIONS);
+
 export function UsagePage() {
-  const [activeView, setActiveView] = useState<"history" | "subscriptions">("history");
-  const [windowSelection, setWindowSelection] = useState(() => ({
-    days: 30,
-    window: makeWindow(30),
-  }));
+  const [usageSelection, setUsageSelection] = useLocalStorage(
+    USAGE_PAGE_SELECTION_STORAGE_KEY,
+    DEFAULT_USAGE_PAGE_SELECTION,
+    UsagePageSelectionSchema,
+  );
+  const activeView = usageSelection === "subscriptions" ? "subscriptions" : "history";
+  const [windowSelection, setWindowSelection] = useState(() => {
+    const days = usageSelection === "subscriptions" ? DEFAULT_USAGE_PAGE_SELECTION : usageSelection;
+    return {
+      days,
+      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+    };
+  });
   const [subscriptionWindow, setSubscriptionWindow] = useState(() => makeWindow(30));
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
@@ -63,6 +79,14 @@ export function UsagePage() {
   );
   const subscriptionHistory = useUsage(subscriptionWindow, activeView === "subscriptions");
   const subscriptions = useSubscriptionUsage();
+
+  useEffect(() => {
+    if (usageSelection === "subscriptions" || usageSelection === windowSelection.days) return;
+    setWindowSelection({
+      days: usageSelection,
+      window: makeWindow(usageSelection, undefined, usageSelection === 1 ? "hour" : "day"),
+    });
+  }, [usageSelection, windowSelection.days]);
 
   // Hold the content until every environment is terminal. Rendering merged
   // totals while devices are still answering makes every number on the page
@@ -102,8 +126,8 @@ export function UsagePage() {
   const periodAverage = activePeriods === 0 ? 0 : merged.totalTokens / activePeriods;
   const observedInput = merged.uncachedInputTokens + merged.cachedInputTokens;
   const cachedShare = observedInput === 0 ? 0 : merged.cachedInputTokens / observedInput;
-  const selectWindow = (days: number) => {
-    setActiveView("history");
+  const selectWindow = (days: UsageHistoryDays) => {
+    setUsageSelection(days);
     setWindowSelection({
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
@@ -201,7 +225,7 @@ export function UsagePage() {
                   <button
                     type="button"
                     aria-pressed={activeView === "subscriptions"}
-                    onClick={() => setActiveView("subscriptions")}
+                    onClick={() => setUsageSelection("subscriptions")}
                     className={cn(
                       "relative cursor-pointer px-3 py-1.5 text-xs outline-none first:rounded-s-[calc(var(--radius-md)-1px)] last:rounded-e-[calc(var(--radius-md)-1px)] focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
                       activeView === "subscriptions"

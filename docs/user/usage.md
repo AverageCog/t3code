@@ -7,7 +7,8 @@ token cost shown here.
 
 Use **Past 24h** for an hourly chart covering the exact rolling 24-hour period. The **7 days**,
 **30 days**, and **90 days** ranges use daily resolution. Cost and token toggles update both the
-headline and chart, and refreshing rescans every connected environment.
+headline and chart, and refreshing rescans every connected environment. The app remembers the
+selected range or Subscriptions tab on this device and opens Usage there the next time.
 
 Use **Subscriptions** to see the current limits reported by ChatGPT, Claude, and Grok. The page
 shows ChatGPT and Claude's rolling 5-hour and weekly windows and Grok's shared weekly pool when the

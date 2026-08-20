@@ -1,3 +1,4 @@
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
   expectedSubscriptionProvider,
@@ -12,6 +13,7 @@ import type {
 } from "@t3tools/contracts";
 import type { DailyTotals, MergedUsage } from "@t3tools/shared/usageMerge";
 import {
+  DEFAULT_USAGE_PAGE_SELECTION,
   enumerateDays,
   enumerateHourStarts,
   formatCount,
@@ -21,14 +23,18 @@ import {
   formatTokens,
   formatUsd,
   makeWindow,
+  type UsageHistoryDays,
+  type UsagePageSelection,
 } from "@t3tools/shared/usageFormat";
-import { useMemo, useState } from "react";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useSubscriptionUsage, useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { UsageDailyChart } from "./UsageDailyChart";
@@ -43,7 +49,7 @@ const WINDOW_OPTIONS = [
 ] as const;
 
 const VIEW_OPTIONS: readonly {
-  readonly value: number | "subscriptions";
+  readonly value: UsagePageSelection;
   readonly label: string;
 }[] = [
   ...WINDOW_OPTIONS.map((option) => ({ value: option.days, label: option.label })),
@@ -58,11 +64,19 @@ const CHART_HEIGHT = 180;
 export function UsageRouteScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const [activeView, setActiveView] = useState<"history" | "subscriptions">("history");
-  const [windowSelection, setWindowSelection] = useState(() => ({
-    days: 30,
-    window: makeWindow(30),
-  }));
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const usageSelection = AsyncResult.isSuccess(preferencesResult)
+    ? (preferencesResult.value.usagePageSelection ?? DEFAULT_USAGE_PAGE_SELECTION)
+    : DEFAULT_USAGE_PAGE_SELECTION;
+  const activeView = usageSelection === "subscriptions" ? "subscriptions" : "history";
+  const [windowSelection, setWindowSelection] = useState(() => {
+    const days = usageSelection === "subscriptions" ? DEFAULT_USAGE_PAGE_SELECTION : usageSelection;
+    return {
+      days,
+      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
+    };
+  });
   const [subscriptionWindow, setSubscriptionWindow] = useState(() => makeWindow(30));
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const { days: windowDays, window } = windowSelection;
@@ -73,6 +87,14 @@ export function UsageRouteScreen() {
   );
   const subscriptionHistory = useUsage(subscriptionWindow, activeView === "subscriptions");
   const subscriptions = useSubscriptionUsage();
+
+  useEffect(() => {
+    if (usageSelection === "subscriptions" || usageSelection === windowSelection.days) return;
+    setWindowSelection({
+      days: usageSelection,
+      window: makeWindow(usageSelection, undefined, usageSelection === 1 ? "hour" : "day"),
+    });
+  }, [usageSelection, windowSelection.days]);
 
   const days = useMemo(
     () => enumerateDays(window.sinceDay, window.untilDay),
@@ -102,8 +124,8 @@ export function UsageRouteScreen() {
   // before. The initial scan renders its own placeholder, and an unreachable
   // environment stays pending forever — neither may pin the spinner on.
   const historyRefreshing = environments.some((entry) => entry.isPending && entry.summary !== null);
-  const selectWindow = (days: number) => {
-    setActiveView("history");
+  const selectWindow = (days: UsageHistoryDays) => {
+    savePreferences({ usagePageSelection: days });
     setWindowSelection({
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
@@ -164,10 +186,10 @@ export function UsageRouteScreen() {
       >
         <SegmentedControl
           options={VIEW_OPTIONS}
-          selected={activeView === "subscriptions" ? "subscriptions" : windowDays}
+          selected={usageSelection}
           onSelect={(selection) => {
             if (selection === "subscriptions") {
-              setActiveView("subscriptions");
+              savePreferences({ usagePageSelection: "subscriptions" });
             } else {
               selectWindow(selection);
             }

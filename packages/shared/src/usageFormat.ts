@@ -6,6 +6,15 @@
  */
 import { UsageDay, type UsageResolution, type UsageSummaryInput } from "@t3tools/contracts";
 
+export const USAGE_PAGE_SELECTIONS = [1, 7, 30, 90, "subscriptions"] as const;
+export type UsagePageSelection = (typeof USAGE_PAGE_SELECTIONS)[number];
+export type UsageHistoryDays = Exclude<UsagePageSelection, "subscriptions">;
+export const DEFAULT_USAGE_PAGE_SELECTION = 30 satisfies UsagePageSelection;
+
+export function isUsagePageSelection(value: unknown): value is UsagePageSelection {
+  return (USAGE_PAGE_SELECTIONS as readonly unknown[]).includes(value);
+}
+
 const CURRENCY = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
