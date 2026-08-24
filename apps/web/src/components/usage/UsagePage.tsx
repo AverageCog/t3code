@@ -719,7 +719,7 @@ function SubscriptionUsagePanel({
             isHistoryPending || !hasHistoryResponse ? "—" : value;
           return (
             <article
-              key={`${provider.driver}:${provider.instanceId}:${provider.auth.email ?? status.sourceLabels.join(",")}`}
+              key={status.accountKey}
               className="flex min-w-0 flex-col gap-5 border border-border p-5"
             >
               <div className="flex items-start justify-between gap-4">

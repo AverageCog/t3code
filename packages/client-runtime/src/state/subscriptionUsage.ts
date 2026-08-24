@@ -14,6 +14,7 @@ export interface SubscriptionEnvironmentUsageStatus extends SubscriptionEnvironm
 }
 
 export interface SubscriptionUsageStatus {
+  readonly accountKey: string;
   readonly provider: ServerProvider;
   readonly sourceLabels: readonly string[];
 }
@@ -59,6 +60,13 @@ export function scrambleSubscriptionEmail(email: string): string {
     characters[index] = shuffled[offset] ?? characters[index] ?? "";
   }
   return characters.join("");
+}
+
+/** Masks every account character while retaining only familiar email separators. */
+export function maskSubscriptionEmail(email: string): string {
+  return Array.from(email, (character) =>
+    character === "@" || character === "." ? character : "•",
+  ).join("");
 }
 
 export function expectedSubscriptionProvider(
@@ -129,7 +137,7 @@ export function collectSubscriptionUsageStatuses(
           : `${environment.environmentId}:${provider.driver}:${provider.instanceId}`;
       const existing = byAccount.get(accountKey);
       if (!existing) {
-        byAccount.set(accountKey, { provider, sourceLabels: [environment.label] });
+        byAccount.set(accountKey, { accountKey, provider, sourceLabels: [environment.label] });
         continue;
       }
 
@@ -143,6 +151,7 @@ export function collectSubscriptionUsageStatuses(
         (candidateHasUsage === existingHasUsage &&
           provider.checkedAt > existing.provider.checkedAt);
       byAccount.set(accountKey, {
+        accountKey,
         provider: shouldReplace ? provider : existing.provider,
         sourceLabels,
       });

@@ -1,13 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { GrokSettings } from "@t3tools/contracts";
 
 import {
   buildGrokCapabilitiesFromModelMeta,
+  buildGrokAcpSnapshot,
   buildGrokDiscoveredModelsFromSessionModelState,
   buildInitialGrokProviderSnapshot,
   buildGrokSubscriptionUsageFromBilling,
@@ -281,6 +286,41 @@ describe("buildGrokSubscriptionUsageFromBilling", () => {
   });
 });
 
+describe("buildGrokAcpSnapshot", () => {
+  it.effect("starts billing after giving model discovery its full timeout budget", () =>
+    Effect.gen(function* () {
+      const fiber = yield* buildGrokAcpSnapshot(
+        Effect.sleep(Duration.seconds(14)).pipe(
+          Effect.as({
+            currentModelId: "grok-build",
+            availableModels: [{ modelId: "grok-build", name: "Grok Build" }],
+          }),
+        ),
+        () =>
+          Effect.sleep(Duration.millis(1_500)).pipe(
+            Effect.as({
+              subscription_tier: "SuperGrok",
+              config: {
+                creditUsagePercent: 24,
+                currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY" },
+              },
+            }),
+          ),
+      ).pipe(Effect.forkChild);
+
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.millis(15_500));
+
+      const result = yield* Fiber.join(fiber);
+      expect(Option.isSome(result)).toBe(true);
+      if (Option.isSome(result)) {
+        expect(result.value.models.map((model) => model.slug)).toEqual(["grok-build"]);
+        expect(result.value.subscriptionUsage?.windows[0]?.usedPercent).toBe(24);
+      }
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+});
+
 describe("buildInitialGrokProviderSnapshot", () => {
   it.effect("returns a disabled snapshot when settings.enabled is false", () =>
     Effect.gen(function* () {
@@ -381,7 +421,7 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
           return yield* checkGrokProviderStatus(
             decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
             process.env,
-            () => Effect.succeed({ models: [], subscriptionUsage }),
+            () => Effect.succeed(Option.some({ models: [], subscriptionUsage })),
           );
         }),
       );

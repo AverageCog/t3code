@@ -2,7 +2,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
   expectedSubscriptionProvider,
-  scrambleSubscriptionEmail,
+  maskSubscriptionEmail,
   type SubscriptionEnvironmentUsageStatus,
   type SubscriptionUsageStatus,
 } from "@t3tools/client-runtime/state/subscription-usage";
@@ -407,7 +407,7 @@ function SubscriptionUsageContent(props: {
           props.isHistoryPending || !props.hasHistoryResponse ? "—" : value;
         return (
           <View
-            key={`${provider.driver}:${provider.instanceId}:${provider.auth.email ?? status.sourceLabels.join(",")}`}
+            key={status.accountKey}
             className="gap-5 rounded-[24px] border-continuous bg-card p-5"
           >
             <View className="flex-row items-start justify-between gap-3">
@@ -537,11 +537,8 @@ function SubscriptionUsageContent(props: {
                   accessibilityState={{ selected: !emailIsConcealed }}
                   onPress={() => toggleEmail(emailKey)}
                 >
-                  <Text
-                    className="text-xs text-foreground-tertiary"
-                    style={emailIsConcealed ? { filter: [{ blur: 2 }] } : undefined}
-                  >
-                    {emailIsConcealed ? scrambleSubscriptionEmail(email) : email}
+                  <Text className="text-xs text-foreground-tertiary">
+                    {emailIsConcealed ? maskSubscriptionEmail(email) : email}
                   </Text>
                 </Pressable>
               </View>

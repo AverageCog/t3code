@@ -337,12 +337,41 @@ export function buildGrokSubscriptionUsageFromBilling(
   };
 }
 
-export function requestGrokSubscriptionUsage<E>(
-  request: (method: string, payload: unknown) => Effect.Effect<unknown, E>,
-): Effect.Effect<ProviderSubscriptionUsage | undefined, E> {
+export function requestGrokSubscriptionUsage<E, R>(
+  request: (method: string, payload: unknown) => Effect.Effect<unknown, E, R>,
+): Effect.Effect<ProviderSubscriptionUsage | undefined, E, R> {
   return request(GROK_BILLING_ACP_METHOD, {}).pipe(
     Effect.map(buildGrokSubscriptionUsageFromBilling),
   );
+}
+
+interface GrokAcpSnapshot {
+  readonly models: ReadonlyArray<ServerProviderModel>;
+  readonly subscriptionUsage?: ProviderSubscriptionUsage;
+}
+
+/**
+ * Gives ACP startup its full discovery budget before attempting optional
+ * billing enrichment, which has its own shorter timeout.
+ */
+export function buildGrokAcpSnapshot<E, R, RequestE, RequestR>(
+  start: Effect.Effect<EffectAcpSchema.SessionModelState | null | undefined, E, R>,
+  request: (method: string, payload: unknown) => Effect.Effect<unknown, RequestE, RequestR>,
+  discoveryTimeoutMs = GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS,
+): Effect.Effect<Option.Option<GrokAcpSnapshot>, E, R | RequestR> {
+  return Effect.gen(function* () {
+    const modelState = yield* start.pipe(Effect.timeoutOption(discoveryTimeoutMs));
+    if (Option.isNone(modelState)) {
+      return Option.none<GrokAcpSnapshot>();
+    }
+
+    const billing = yield* optionalProviderEnrichment(requestGrokSubscriptionUsage(request));
+    const subscriptionUsage = Option.isSome(billing) ? billing.value : undefined;
+    return Option.some({
+      models: buildGrokDiscoveredModelsFromSessionModelState(modelState.value),
+      ...(subscriptionUsage ? { subscriptionUsage } : {}),
+    });
+  });
 }
 
 const probeGrokViaAcp = (
@@ -358,13 +387,10 @@ const probeGrokViaAcp = (
       cwd: process.cwd(),
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
-    const started = yield* acp.start();
-    const billing = yield* optionalProviderEnrichment(requestGrokSubscriptionUsage(acp.request));
-    const subscriptionUsage = Option.isSome(billing) ? billing.value : undefined;
-    return {
-      models: buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models),
-      ...(subscriptionUsage ? { subscriptionUsage } : {}),
-    };
+    return yield* buildGrokAcpSnapshot(
+      acp.start().pipe(Effect.map((started) => started.sessionSetupResult.models)),
+      acp.request,
+    );
   }).pipe(Effect.scoped);
 
 const runGrokVersionCommand = (
@@ -479,10 +505,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const discoveryExit = yield* acpProbe(grokSettings, environment).pipe(
-    Effect.timeoutOption(GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
-    Effect.exit,
-  );
+  const discoveryExit = yield* acpProbe(grokSettings, environment).pipe(Effect.exit);
   if (Exit.isFailure(discoveryExit)) {
     yield* Effect.logWarning("Grok ACP model discovery failed", {
       errorTag: causeErrorTag(discoveryExit.cause),

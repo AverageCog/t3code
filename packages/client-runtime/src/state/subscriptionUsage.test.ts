@@ -9,6 +9,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   collectSubscriptionUsageState,
   collectSubscriptionUsageStatuses,
+  maskSubscriptionEmail,
   scrambleSubscriptionEmail,
 } from "./subscriptionUsage.ts";
 
@@ -67,6 +68,7 @@ describe("collectSubscriptionUsageStatuses", () => {
     ]);
 
     expect(result).toHaveLength(1);
+    expect(result[0]?.accountKey).toBe("chatgpt:dev@example.com");
     expect(result[0]?.provider).toBe(newer);
     expect(result[0]?.sourceLabels).toEqual(["Mac", "Server"]);
   });
@@ -126,6 +128,10 @@ describe("collectSubscriptionUsageStatuses", () => {
     ]);
 
     expect(result).toHaveLength(2);
+    expect(result.map((status) => status.accountKey)).toEqual([
+      "local:grok:grok",
+      "remote:grok:grok",
+    ]);
     expect(result.map((status) => status.provider.subscriptionUsage?.provider)).toEqual([
       "grok",
       "grok",
@@ -274,5 +280,16 @@ describe("scrambleSubscriptionEmail", () => {
     expect([...scrambled].filter((character) => /[a-z0-9]/i.test(character)).sort()).toEqual(
       [...email].filter((character) => /[a-z0-9]/i.test(character)).sort(),
     );
+  });
+});
+
+describe("maskSubscriptionEmail", () => {
+  it("conceals every account character without platform-specific blur", () => {
+    const email = "dev.account@example.com";
+    const masked = maskSubscriptionEmail(email);
+
+    expect(masked).toBe("•••.•••••••@•••••••.•••");
+    expect(masked).not.toMatch(/[a-z0-9]/i);
+    expect(Array.from(masked)).toHaveLength(Array.from(email).length);
   });
 });
