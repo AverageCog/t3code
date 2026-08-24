@@ -28,6 +28,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - label: macOS arm64
+            runner: macos-14
+            platform: mac
+            target: dmg
+            arch: arm64
           - label: Windows x64
             runner: windows-latest
             platform: win
@@ -98,11 +103,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
-          if [[ "${{ matrix.platform }}" == "win" ]]; then
-            assets=(release/*.exe release/*.exe.blockmap release/latest.yml)
-          else
-            assets=(release/*.AppImage release/latest-linux.yml)
-          fi
+          case "${{ matrix.platform }}" in
+            mac)
+              assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
+              ;;
+            win)
+              assets=(release/*.exe release/*.exe.blockmap release/latest.yml)
+              ;;
+            linux)
+              assets=(release/*.AppImage release/latest-linux.yml)
+              ;;
+          esac
 
           if (( ${#assets[@]} == 0 )); then
             echo "No ${{ matrix.label }} release assets were produced." >&2
