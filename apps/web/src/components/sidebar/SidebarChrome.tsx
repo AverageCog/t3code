@@ -28,9 +28,10 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "../ui/sidebar";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
+import { UsageSubscriptionPeek } from "./UsageSubscriptionPeek";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
@@ -122,23 +123,44 @@ function SidebarUtilityItem({
   icon,
   label,
   onClick,
+  popup,
 }: {
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  /** Rich hover content; defaults to the plain label. */
+  popup?: ReactNode;
 }) {
   return (
     <SidebarMenuItem className="shrink-0">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
-              {icon}
-            </SidebarMenuButton>
-          }
-        />
-        <TooltipPopup side="top">{label}</TooltipPopup>
-      </Tooltip>
+      {popup ? (
+        // Rich popups read as menus, so they open without the label tooltip's delay.
+        <TooltipProvider delay={100}>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
+                  {icon}
+                </SidebarMenuButton>
+              }
+            />
+            <TooltipPopup align="start" side="top">
+              {popup}
+            </TooltipPopup>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
+                {icon}
+              </SidebarMenuButton>
+            }
+          />
+          <TooltipPopup side="top">{label}</TooltipPopup>
+        </Tooltip>
+      )}
     </SidebarMenuItem>
   );
 }
@@ -220,6 +242,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
             onClick={handleUsageClick}
+            popup={<UsageSubscriptionPeek />}
           />
         </>
       )}
