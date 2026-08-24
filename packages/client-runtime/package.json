@@ -131,6 +131,10 @@
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
     },
+    "./state/subscription-usage": {
+      "types": "./src/state/subscriptionUsage.ts",
+      "default": "./src/state/subscriptionUsage.ts"
+    },
     "./state/thread-sort": {
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"

@@ -2,6 +2,8 @@ import {
   type ClaudeSettings,
   type ModelCapabilities,
   type ModelSelection,
+  type ProviderSubscriptionUsage,
+  type SubscriptionUsageWindowScope,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
@@ -11,6 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   createModelCapabilities,
@@ -42,6 +45,7 @@ import {
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import { discoverClaudeSkills } from "../Drivers/ClaudeSkills.ts";
+import { optionalProviderEnrichment } from "../optionalProviderEnrichment.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -573,7 +577,98 @@ function claudeAuthMetadata(input: {
 function apiProviderAuthMetadata(
   apiProvider: string | undefined,
 ): { readonly type: string; readonly label: string } | undefined {
-  return apiProvider === "bedrock" ? { type: "bedrock", label: "Amazon Bedrock" } : undefined;
+  if (!apiProvider || apiProvider === "firstParty") return undefined;
+  const label =
+    {
+      bedrock: "Amazon Bedrock",
+      vertex: "Google Vertex AI",
+      foundry: "Microsoft Foundry",
+      anthropicAws: "Anthropic on AWS",
+      mantle: "Mantle",
+      gateway: "Enterprise Gateway",
+    }[apiProvider] ?? toTitleCaseWords(apiProvider);
+  return { type: apiProvider, label };
+}
+
+const ClaudeSubscriptionLimitWindow = Schema.Struct({
+  utilization: Schema.NullOr(Schema.Number),
+  resets_at: Schema.NullOr(Schema.String),
+});
+
+const ClaudeSubscriptionUsageResponse = Schema.Struct({
+  subscription_type: Schema.NullOr(Schema.String),
+  rate_limits_available: Schema.Boolean,
+  rate_limits: Schema.NullOr(
+    Schema.Struct({
+      five_hour: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+      seven_day: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+      seven_day_oauth_apps: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+      seven_day_opus: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+      seven_day_sonnet: Schema.optionalKey(Schema.NullOr(ClaudeSubscriptionLimitWindow)),
+    }),
+  ),
+});
+
+const decodeClaudeSubscriptionUsageResponse = Schema.decodeUnknownOption(
+  ClaudeSubscriptionUsageResponse,
+);
+
+function claudeSubscriptionWindow(
+  kind: "primary" | "weekly",
+  windowDurationMinutes: number,
+  window: typeof ClaudeSubscriptionLimitWindow.Type | null | undefined,
+  scope?: SubscriptionUsageWindowScope,
+): ProviderSubscriptionUsage["windows"][number] | undefined {
+  if (!window) return undefined;
+  if (window.utilization === null) return undefined;
+  const resetsAt =
+    window.resets_at !== null
+      ? Option.match(DateTime.make(window.resets_at), {
+          onNone: () => null,
+          onSome: DateTime.formatIso,
+        })
+      : null;
+
+  return {
+    kind,
+    ...(scope ? { scope } : {}),
+    usedPercent: Math.min(100, Math.max(0, window.utilization)),
+    windowDurationMinutes,
+    resetsAt,
+  };
+}
+
+/** Maps Claude Code's structured `/usage` response onto the shared quota shape. */
+export function mapClaudeSubscriptionUsage(input: unknown): ProviderSubscriptionUsage | undefined {
+  const decoded = decodeClaudeSubscriptionUsageResponse(input);
+  if (Option.isNone(decoded) || !decoded.value.rate_limits_available) return undefined;
+
+  const response = decoded.value;
+  const rateLimits = response.rate_limits;
+  const windows = rateLimits
+    ? [
+        claudeSubscriptionWindow("primary", 300, rateLimits.five_hour),
+        claudeSubscriptionWindow("weekly", 10_080, rateLimits.seven_day),
+        claudeSubscriptionWindow("weekly", 10_080, rateLimits.seven_day_oauth_apps, {
+          type: "feature",
+          id: "oauth_apps",
+          label: "OAuth apps",
+        }),
+        claudeSubscriptionWindow("weekly", 10_080, rateLimits.seven_day_opus, {
+          type: "model",
+          id: "opus",
+          label: "Opus",
+        }),
+        claudeSubscriptionWindow("weekly", 10_080, rateLimits.seven_day_sonnet, {
+          type: "model",
+          id: "sonnet",
+          label: "Sonnet",
+        }),
+      ].filter((window) => window !== undefined)
+    : [];
+  const plan = response.subscription_type?.trim() || null;
+
+  return { provider: "claude", plan, windows };
 }
 
 // ── SDK capability probe ────────────────────────────────────────────
@@ -642,6 +737,7 @@ type ClaudeCapabilitiesProbe = {
    */
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  readonly subscriptionUsage?: ProviderSubscriptionUsage;
 };
 
 function parseClaudeInitializationCommands(
@@ -736,55 +832,70 @@ const probeClaudeCapabilities = (
 ) => {
   const abort = new AbortController();
   return Effect.gen(function* () {
-    const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    const executablePath = yield* resolveClaudeSdkExecutablePath(
-      claudeSettings.binaryPath,
-      claudeEnvironment,
-    );
-    return yield* Effect.tryPromise(async () => {
-      const q = claudeQuery({
-        // Never yield — we only need initialization data, not a conversation.
-        // This prevents any prompt from reaching the Anthropic API.
-        // oxlint-disable-next-line require-yield
-        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-          await waitForAbortSignal(abort.signal);
-        })(),
-        options: buildClaudeCapabilitiesProbeQueryOptions({
-          executablePath,
-          abortController: abort,
-          environment: claudeEnvironment,
-          cwd,
-        }),
+    const initializationResult = yield* Effect.gen(function* () {
+      const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+      const executablePath = yield* resolveClaudeSdkExecutablePath(
+        claudeSettings.binaryPath,
+        claudeEnvironment,
+      );
+      return yield* Effect.tryPromise(async () => {
+        const query = claudeQuery({
+          // Never yield — we only need initialization data, not a conversation.
+          // This prevents any prompt from reaching the Anthropic API.
+          // oxlint-disable-next-line require-yield
+          prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+            await waitForAbortSignal(abort.signal);
+          })(),
+          options: buildClaudeCapabilitiesProbeQueryOptions({
+            executablePath,
+            abortController: abort,
+            environment: claudeEnvironment,
+            cwd,
+          }),
+        });
+        const init = await query.initializationResult();
+        const account = init.account as
+          | {
+              readonly email?: string;
+              readonly subscriptionType?: string;
+              readonly tokenSource?: string;
+              readonly apiProvider?: string;
+            }
+          | undefined;
+        return {
+          query,
+          capabilities: {
+            email: account?.email,
+            subscriptionType: account?.subscriptionType,
+            tokenSource: account?.tokenSource,
+            apiProvider: account?.apiProvider,
+            slashCommands: parseClaudeInitializationCommands(init.commands),
+          },
+        };
       });
-      const init = await q.initializationResult();
-      const account = init.account as
-        | {
-            readonly email?: string;
-            readonly subscriptionType?: string;
-            readonly tokenSource?: string;
-            readonly apiProvider?: string;
-          }
-        | undefined;
-      return {
-        email: account?.email,
-        subscriptionType: account?.subscriptionType,
-        tokenSource: account?.tokenSource,
-        apiProvider: account?.apiProvider,
-        slashCommands: parseClaudeInitializationCommands(init.commands),
-      } satisfies ClaudeCapabilitiesProbe;
-    });
+    }).pipe(Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS), Effect.result);
+
+    if (Result.isFailure(initializationResult) || Option.isNone(initializationResult.success)) {
+      return undefined;
+    }
+
+    const { query, capabilities } = initializationResult.success.value;
+    const usageResponse = yield* optionalProviderEnrichment(
+      Effect.tryPromise(() => query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()),
+    );
+    const subscriptionUsage = Option.isSome(usageResponse)
+      ? mapClaudeSubscriptionUsage(usageResponse.value)
+      : undefined;
+    return {
+      ...capabilities,
+      ...(subscriptionUsage ? { subscriptionUsage } : {}),
+    } satisfies ClaudeCapabilitiesProbe;
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
         if (!abort.signal.aborted) abort.abort();
       }),
     ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
-    Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
   );
 };
 
@@ -960,6 +1071,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     models,
     slashCommands: dedupedSlashCommands,
     skills,
+    ...(capabilities.subscriptionUsage
+      ? { subscriptionUsage: capabilities.subscriptionUsage }
+      : {}),
     probe: {
       installed: true,
       version: parsedVersion,

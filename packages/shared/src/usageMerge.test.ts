@@ -185,6 +185,10 @@ describe("mergeUsage", () => {
 
     expect(merged.providers[0]?.provider).toBe("claude");
     expect(merged.providers[0]?.costShare).toBeCloseTo(0.75, 5);
+    expect(merged.providers[0]?.cacheSavingsUsd).toBe(2);
+    expect(
+      merged.providers.find((provider) => provider.provider === "codex")?.unpricedRecords,
+    ).toBe(5);
     expect(merged.costQuality.unpricedShare).toBeCloseTo(0.5, 5);
     expect(merged.costQuality.cacheSavingsUsd).toBe(4);
   });

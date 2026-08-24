@@ -6,9 +6,10 @@
  * closures captured over the per-instance `ClaudeSettings`.
  *
  * Unlike Codex, the Claude snapshot probe may invoke a secondary probe
- * (`probeClaudeCapabilities`) to read Anthropic account + slash-command
- * metadata. That probe is per-instance and keyed by binary + resolved HOME so
- * two concurrent Claude instances don't cross-contaminate account metadata.
+ * (`probeClaudeCapabilities`) to read Anthropic account, slash-command, and
+ * subscription-usage metadata. That probe is per-instance and keyed by binary
+ * + resolved HOME so two concurrent Claude instances don't cross-contaminate
+ * account metadata.
  *
  * @module provider/Drivers/ClaudeDriver
  */
@@ -43,6 +44,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import type { ServerProviderShape } from "../Services/ServerProvider.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
@@ -176,7 +178,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<ClaudeSettings>>({
+      const managedSnapshot = yield* makeManagedServerProvider<
+        ProviderSnapshotSettings<ClaudeSettings>
+      >({
         maintenanceCapabilities,
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
@@ -202,6 +206,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             }),
         ),
       );
+      // A user-triggered refresh must not pair a new checkedAt timestamp with
+      // quota data retained by the five-minute background capability cache.
+      const snapshot = {
+        ...managedSnapshot,
+        refresh: Cache.invalidate(capabilitiesProbeCache, capabilitiesCacheKey).pipe(
+          Effect.andThen(managedSnapshot.refresh),
+        ),
+      } satisfies ServerProviderShape;
 
       return {
         instanceId,

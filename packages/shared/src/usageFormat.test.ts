@@ -6,8 +6,17 @@ import {
   formatDateTimeShort,
   formatHourShort,
   formatRelativeHourShort,
+  isUsagePageSelection,
   makeWindow,
 } from "./usageFormat.ts";
+
+describe("usage page selection", () => {
+  it("accepts only supported history ranges and the subscriptions tab", () => {
+    expect([1, 7, 30, 90, "subscriptions"].every(isUsagePageSelection)).toBe(true);
+    expect(isUsagePageSelection("30")).toBe(false);
+    expect(isUsagePageSelection("history")).toBe(false);
+  });
+});
 
 describe("hourly usage formatting", () => {
   it("enumerates 24 fixed buckets across a rolling window", () => {
