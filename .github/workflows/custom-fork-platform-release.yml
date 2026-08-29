@@ -1,29 +1,128 @@
 name: Custom Fork Platform Release
 
-run-name: Custom fork ${{ inputs.version || github.event.release.tag_name }}
+run-name: Custom fork ${{ github.event_name == 'schedule' && 'nightly' || inputs.version || inputs.channel || github.event.release.tag_name }}
 
 on:
   release:
     types: [published]
+  schedule:
+    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
+      channel:
+        description: Custom release channel
+        required: false
+        default: stable
+        type: choice
+        options:
+          - stable
+          - nightly
       version:
-        description: Custom release version without the fork-v prefix
-        required: true
+        description: Stable version without the fork-v prefix (not used for nightly)
+        required: false
         type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: custom-fork-platform-release-${{ inputs.version || github.event.release.tag_name }}
+  group: custom-fork-platform-release-${{ github.event_name == 'schedule' && 'nightly' || inputs.version || inputs.channel || github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  prepare:
+    name: Prepare custom release
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      startsWith(github.event.release.tag_name, 'fork-v')
+      github.event_name != 'release' ||
+      (startsWith(github.event.release.tag_name, 'fork-v') &&
+      !contains(github.event.release.tag_name, '-nightly.'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      should_build: ${{ steps.release.outputs.should_build }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      name: ${{ steps.release.outputs.name }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      update_channel: ${{ steps.release.outputs.update_channel }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - id: release
+        name: Resolve custom release metadata
+        shell: bash
+        env:
+          DISPATCH_CHANNEL: ${{ inputs.channel }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
+        run: |
+          source_sha=$(git rev-parse HEAD)
+
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            tag="$RELEASE_TAG"
+            version="${tag#fork-v}"
+            update_channel=latest
+            source_sha=$(git rev-parse "$tag^{commit}")
+          elif [[ "$GITHUB_EVENT_NAME" == "schedule" || "${DISPATCH_CHANNEL:-stable}" == "nightly" ]]; then
+            update_channel=nightly
+
+            if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+              last_nightly_tag=$(git tag --list 'fork-v*-nightly.*' --sort=-creatordate | head -n 1)
+              if [[ -n "$last_nightly_tag" && "$(git rev-parse "$last_nightly_tag^{commit}")" == "$source_sha" ]]; then
+                echo "No changes on main since $last_nightly_tag. Skipping."
+                echo "should_build=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+
+            version_base=$(date -u -d "$RUN_STARTED_AT" '+%Y.%-m.%-d%H%M%S')
+            nightly_date=$(date -u -d "$RUN_STARTED_AT" '+%Y%m%d')
+            version="$version_base-nightly.$nightly_date.$GITHUB_RUN_NUMBER"
+            tag="fork-v$version"
+          else
+            update_channel=latest
+            version="${DISPATCH_VERSION#fork-v}"
+            if [[ -z "$version" ]]; then
+              echo "Manual stable releases require a version." >&2
+              exit 1
+            fi
+            tag="fork-v$version"
+          fi
+
+          if [[ "$update_channel" == "nightly" ]]; then
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$ ]]; then
+              echo "Invalid custom nightly version: $version" >&2
+              exit 1
+            fi
+            name="Code Slave Nightly $version (${source_sha:0:12})"
+          else
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid custom stable version: $version" >&2
+              exit 1
+            fi
+            name="Custom T3 Code $version"
+          fi
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "update_channel=$update_channel" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -43,28 +142,16 @@ jobs:
             platform: linux
             target: AppImage
             arch: x64
-    name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     env:
-      RELEASE_VERSION: ${{ inputs.version || github.event.release.tag_name }}
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
       T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
     steps:
-      - name: Normalize release metadata
-        shell: bash
-        run: |
-          version="${RELEASE_VERSION#fork-v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid custom release version: $version" >&2
-            exit 1
-          fi
-          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=fork-v$version" >> "$GITHUB_ENV"
-
       - name: Checkout release source
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ needs.prepare.outputs.source_sha }}
           fetch-depth: 1
           sparse-checkout: |
             /*
@@ -97,21 +184,21 @@ jobs:
             --build-version "$RELEASE_VERSION" \
             --verbose
 
-      - name: Publish updater assets
+      - name: Collect updater assets
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.update_channel }}
         run: |
           shopt -s nullglob
           case "${{ matrix.platform }}" in
             mac)
-              assets=(release/*.dmg release/*.zip release/*.blockmap release/latest-mac.yml)
+              assets=(release/*.dmg release/*.zip release/*.blockmap "release/$UPDATE_CHANNEL-mac.yml")
               ;;
             win)
-              assets=(release/*.exe release/*.exe.blockmap release/latest.yml)
+              assets=(release/*.exe release/*.exe.blockmap "release/$UPDATE_CHANNEL.yml")
               ;;
             linux)
-              assets=(release/*.AppImage release/latest-linux.yml)
+              assets=(release/*.AppImage "release/$UPDATE_CHANNEL-linux.yml")
               ;;
           esac
 
@@ -120,6 +207,73 @@ jobs:
             exit 1
           fi
 
-          gh release upload "$RELEASE_TAG" "${assets[@]}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
+          for asset in "${assets[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Missing expected ${{ matrix.label }} release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p release-publish
+          cp "${assets[@]}" release-publish/
+
+      - name: Upload updater assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: custom-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release-publish/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish custom release
+    needs: [prepare, build]
+    if: >-
+      !failure() && !cancelled() &&
+      needs.prepare.outputs.should_build == 'true' &&
+      needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download updater assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: custom-desktop-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NAME: ${{ needs.prepare.outputs.name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.update_channel }}
+        run: |
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No custom desktop release assets were downloaded." >&2
+            exit 1
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            release_args=(
+              --repo "$GITHUB_REPOSITORY"
+              --target "$SOURCE_SHA"
+              --title "$RELEASE_NAME"
+              --generate-notes
+            )
+            if [[ "$UPDATE_CHANNEL" == "nightly" ]]; then
+              release_args+=(--prerelease --latest=false)
+            else
+              release_args+=(--latest)
+            fi
+
+            gh release create "$RELEASE_TAG" "${release_args[@]}" "${assets[@]}"
+          fi

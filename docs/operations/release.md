@@ -171,6 +171,25 @@ One-time Vercel dashboard setup:
 - Publishes the CLI package (`apps/server`, npm package `t3`) to the `nightly` npm dist-tag using the same nightly version.
 - Does not commit version bumps back to `main`.
 
+## Custom fork desktop nightlies
+
+The custom `Code Slave` desktop build has its own lightweight release workflow at
+`.github/workflows/custom-fork-platform-release.yml`. It runs daily at 08:00 UTC and can also be
+started manually with `channel=nightly`. Scheduled runs compare `main` with the last published
+`fork-v*-nightly.*` tag and do nothing when the commit is unchanged.
+
+Custom nightly versions use the form
+`YYYY.M.DHHMMSS-nightly.YYYYMMDD.<run_number>` (the month and stable-part day are not zero-padded).
+The date-based stable portion keeps a new nightly
+newer than the fork's date-based stable releases, while the suffix selects Electron's dedicated
+`nightly` updater manifests. The workflow builds macOS arm64, Windows x64, and Linux x64 artifacts,
+then publishes the GitHub prerelease only after all three builds succeed. Failed builds therefore
+do not leave a partial update visible and are retried by the next scheduled run.
+
+To follow these builds from an installed custom desktop app, choose **Nightly** under
+**Settings → General → About → Update track**. Choose **Stable** there to return to custom stable
+releases.
+
 ## Server self-update release invariant
 
 Connected servers update to the client's exact version, not to an npm dist-tag. Every released
