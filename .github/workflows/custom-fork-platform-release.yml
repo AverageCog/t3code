@@ -63,7 +63,6 @@ jobs:
           DISPATCH_CHANNEL: ${{ inputs.channel }}
           DISPATCH_VERSION: ${{ inputs.version }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RUN_STARTED_AT: ${{ github.run_started_at }}
         run: |
           source_sha=$(git rev-parse HEAD)
 
@@ -84,8 +83,8 @@ jobs:
               fi
             fi
 
-            version_base=$(date -u -d "$RUN_STARTED_AT" '+%Y.%-m.%-d%H%M%S')
-            nightly_date=$(date -u -d "$RUN_STARTED_AT" '+%Y%m%d')
+            version_base=$(date -u '+%Y.%-m.%-d%H%M%S')
+            nightly_date=$(date -u '+%Y%m%d')
             version="$version_base-nightly.$nightly_date.$GITHUB_RUN_NUMBER"
             tag="fork-v$version"
           else
