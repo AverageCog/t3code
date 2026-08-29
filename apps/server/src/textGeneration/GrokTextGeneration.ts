@@ -8,6 +8,7 @@ import type * as EffectAcpErrors from "effect-acp/errors";
 
 import { type GrokSettings, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import { TextGenerationError } from "@t3tools/contracts";
@@ -84,18 +85,22 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
 
       const promptResult = yield* Effect.gen(function* () {
         const started = yield* runtime.start();
+        const requestedReasoningEffort = getModelSelectionStringOptionValue(
+          modelSelection,
+          "reasoningEffort",
+        );
         yield* applyGrokAcpModelSelection({
           runtime,
           currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
-          requestedModelId: resolvedModel,
           currentReasoningEffort: currentGrokReasoningEffortFromSessionSetup(
             started.sessionSetupResult,
           ),
-          selections: modelSelection.options,
+          requestedModelId: resolvedModel,
+          requestedReasoningEffort,
           mapError: (cause) =>
             new TextGenerationError({
               operation,
-              detail: "Failed to set Grok ACP model or reasoning effort for text generation.",
+              detail: "Failed to set Grok ACP base model for text generation.",
               cause,
             }),
         });

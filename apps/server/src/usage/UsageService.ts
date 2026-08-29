@@ -1,9 +1,9 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files rather than T3 Code's
- * orchestration projections, so usage covers turns driven outside T3 Code too.
- * This is the approach `ccusage` takes.
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
+ * Grok Build) rather than T3 Code's orchestration projections, so usage covers
+ * turns driven outside T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -21,6 +21,7 @@ import {
   type UsageSummaryInput,
   UsageReadError,
 } from "@t3tools/contracts";
+import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -39,7 +40,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import { parseRateTable, withLocalFallbackRates, type RateTable } from "./usagePricing.ts";
+import { parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -124,13 +125,14 @@ export const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const httpClient = yield* HttpClient.HttpClient;
+  const hostEnvironment = yield* HostProcessEnvironment;
 
   const fileCache: ScanCache = new Map();
   let cacheDirty = false;
 
   const ratesCachePath = path.join(config.stateDir, "usage-model-rates.json");
   const scanCachePath = path.join(config.stateDir, "usage-scan-cache.json");
-  let rates: RateTable = withLocalFallbackRates(new Map());
+  let rates: RateTable = new Map();
   let ratesFetchedAtMs: number | null = null;
   let ratesStatus: UsageSummary["pricing"]["status"] = "unavailable";
 
@@ -151,7 +153,7 @@ export const make = Effect.gen(function* () {
       if (fromDisk !== null) {
         const parsed = parseRateTable(fromDisk.document);
         if (parsed.size > 0) {
-          rates = withLocalFallbackRates(parsed);
+          rates = parsed;
           ratesFetchedAtMs = fromDisk.fetchedAtMs;
           ratesStatus = "cached";
           if (now - fromDisk.fetchedAtMs < RATES_TTL_MS) return;
@@ -175,7 +177,7 @@ export const make = Effect.gen(function* () {
     const parsed = parseRateTable(fetched);
     if (parsed.size === 0) return;
 
-    rates = withLocalFallbackRates(parsed);
+    rates = parsed;
     ratesFetchedAtMs = now;
     ratesStatus = "fresh";
 
@@ -219,16 +221,22 @@ export const make = Effect.gen(function* () {
     const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
     const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
-    const grokHomeOverride = process.env["GROK_HOME"]?.trim();
+    // Grok Settings only expose the binary path; home is `$GROK_HOME` or `~/.grok`.
+    // Empty/whitespace GROK_HOME must fall back: coalescing alone would scan cwd.
+    const grokHomeEnv = hostEnvironment["GROK_HOME"]?.trim() ?? "";
     const grokHome =
-      grokHomeOverride !== undefined && grokHomeOverride.length > 0
-        ? path.resolve(expandHomePath(grokHomeOverride))
+      grokHomeEnv.length > 0
+        ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
-      { provider: "grok" as const, dir: path.join(grokHome, "sessions") },
+      {
+        provider: "grok" as const,
+        dir: path.join(grokHome, "sessions"),
+        fileName: "updates.jsonl",
+      },
     ];
   });
 
@@ -360,7 +368,7 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir } of dirs) {
+    for (const { provider, dir, fileName } of dirs) {
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
       const exists = yield* fileSystem
         .exists(dir)
@@ -381,11 +389,7 @@ export const make = Effect.gen(function* () {
 
       walkedRoots.push(dir);
       const files = yield* Effect.promise(() =>
-        listTranscriptFiles(
-          dir,
-          windowStartMs,
-          provider === "grok" ? { fileName: "updates.jsonl" } : undefined,
-        ),
+        listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
       );
       let scannedFiles = 0;
       let skippedFiles = 0;

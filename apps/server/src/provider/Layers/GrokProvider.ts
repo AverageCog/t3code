@@ -20,7 +20,6 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
-  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -33,10 +32,11 @@ import {
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
 import {
-  GROK_REASONING_EFFORT_OPTION_ID,
+  isValidGrokReasoningEffortToken,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
+import { discoverGrokSkills } from "../Drivers/GrokSkills.ts";
 import { optionalProviderEnrichment } from "../optionalProviderEnrichment.ts";
 
 const GROK_PRESENTATION = {
@@ -53,16 +53,12 @@ const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 export const GROK_BILLING_ACP_METHOD = "_x.ai/billing";
 
-const GrokBillingCent = Schema.Struct({
-  val: Schema.optionalKey(Schema.Number),
-});
-
+const GrokBillingCent = Schema.Struct({ val: Schema.optionalKey(Schema.Number) });
 const GrokBillingPeriod = Schema.Struct({
   type: Schema.optionalKey(Schema.NullOr(Schema.String)),
   start: Schema.optionalKey(Schema.NullOr(Schema.String)),
   end: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
-
 const GrokBillingConfig = Schema.Struct({
   creditUsagePercent: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   currentPeriod: Schema.optionalKey(Schema.NullOr(GrokBillingPeriod)),
@@ -71,13 +67,11 @@ const GrokBillingConfig = Schema.Struct({
   billingPeriodStart: Schema.optionalKey(Schema.NullOr(Schema.String)),
   billingPeriodEnd: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
-
 const GrokBillingResponse = Schema.Struct({
   config: Schema.optionalKey(Schema.NullOr(GrokBillingConfig)),
   subscriptionTier: Schema.optionalKey(Schema.NullOr(Schema.String)),
   subscription_tier: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
-
 const decodeGrokBillingResponse = Schema.decodeUnknownOption(GrokBillingResponse);
 const decodeGrokBillingResponseEnvelope = Schema.decodeUnknownOption(
   Schema.Struct({ result: GrokBillingResponse }),
@@ -138,99 +132,105 @@ function grokModelsFromSettings(
   return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" ? value.trim() || undefined : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const GROK_REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
-  none: "None",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-};
-
-function grokReasoningEffortLabel(value: string): string {
-  return GROK_REASONING_EFFORT_LABELS[value] ?? value;
-}
-
-/**
- * Builds model capabilities from Grok ACP model `_meta`.
- * Reasoning models advertise `supportsReasoningEffort` and a `reasoningEfforts` menu
- * (see `GROK_REASONING_EFFORT_OPTION_ID`). Wire values prefer `entry.value` over `entry.id`.
- */
-export function buildGrokCapabilitiesFromModelMeta(
-  meta: Readonly<Record<string, unknown>> | null | undefined,
-): ModelCapabilities {
-  if (!meta || meta.supportsReasoningEffort !== true) {
-    return EMPTY_CAPABILITIES;
+function grokReasoningOptionsFromModel(model: EffectAcpSchema.ModelInfo): {
+  readonly options: ReadonlyArray<{
+    value: string;
+    label: string;
+    description?: string;
+    isDefault?: boolean;
+  }>;
+  readonly currentValue: string | undefined;
+} {
+  const meta = model._meta;
+  if (!meta || meta.supportsReasoningEffort === false) {
+    return { options: [], currentValue: undefined };
   }
 
-  const efforts = meta.reasoningEfforts;
-  if (!Array.isArray(efforts) || efforts.length === 0) {
-    return EMPTY_CAPABILITIES;
-  }
+  const currentEffort = nonEmptyString(meta.reasoningEffort);
+  const advertisedOptions = Array.isArray(meta.reasoningEfforts) ? meta.reasoningEfforts : [];
+  const seen = new Set<string>();
+  const options: Array<{
+    value: string;
+    label: string;
+    description?: string;
+    advertisedDefault: boolean;
+  }> = [];
 
-  const currentEffort =
-    typeof meta.reasoningEffort === "string" && meta.reasoningEffort.trim().length > 0
-      ? meta.reasoningEffort.trim()
-      : undefined;
-
-  const parsed = efforts.flatMap((entry) => {
+  for (const entry of advertisedOptions) {
     if (!isRecord(entry)) {
-      return [];
+      continue;
     }
-    // Prefer the protocol/wire value; fall back to id for older menu shapes.
+    const rawValue = nonEmptyString(entry.value);
+    const rawId = nonEmptyString(entry.id);
     const value =
-      (typeof entry.value === "string" && entry.value.trim()) ||
-      (typeof entry.id === "string" && entry.id.trim()) ||
-      undefined;
-    if (!value) {
-      return [];
+      rawValue && isValidGrokReasoningEffortToken(rawValue)
+        ? rawValue
+        : rawId && isValidGrokReasoningEffortToken(rawId)
+          ? rawId
+          : undefined;
+    if (value === undefined || seen.has(value)) {
+      continue;
     }
-    const label =
-      (typeof entry.label === "string" && entry.label.trim()) || grokReasoningEffortLabel(value);
-    return [
-      {
-        value,
-        label,
-        markedDefault: entry.default === true,
-      },
-    ];
-  });
-
-  if (parsed.length === 0) {
-    return EMPTY_CAPABILITIES;
+    seen.add(value);
+    const description = nonEmptyString(entry.description);
+    options.push({
+      value,
+      label: nonEmptyString(entry.label) ?? value,
+      ...(description ? { description } : {}),
+      advertisedDefault: entry.default === true || entry.isDefault === true,
+    });
   }
 
-  // Prefer menu default, then advertised current effort, then first entry so the
-  // composer always has an explicit selection for reasoning models.
-  const preferredDefault =
-    parsed.find((option) => option.markedDefault)?.value ??
-    (currentEffort && parsed.some((option) => option.value === currentEffort)
+  const currentValue =
+    currentEffort && options.some((option) => option.value === currentEffort)
       ? currentEffort
-      : parsed[0]?.value);
-
-  const options = parsed.map((option) =>
-    preferredDefault !== undefined && option.value === preferredDefault
-      ? { value: option.value, label: option.label, isDefault: true as const }
-      : { value: option.value, label: option.label },
-  );
-
-  return createModelCapabilities({
-    optionDescriptors: [
-      buildSelectOptionDescriptor({
-        id: GROK_REASONING_EFFORT_OPTION_ID,
-        label: "Reasoning",
-        options,
-      }),
-    ],
-  });
+      : undefined;
+  const advertisedDefaults = options.filter((option) => option.advertisedDefault);
+  const selectedDefault =
+    advertisedDefaults.find((option) => option.value === currentValue)?.value ??
+    advertisedDefaults[0]?.value;
+  return {
+    options: options.map(({ value, label, description }) => ({
+      value,
+      label,
+      ...(description ? { description } : {}),
+      ...(value === selectedDefault ? { isDefault: true } : {}),
+    })),
+    currentValue: currentValue ?? selectedDefault,
+  };
 }
 
-export function buildGrokDiscoveredModelsFromSessionModelState(
+export function buildGrokModelCapabilities(model: EffectAcpSchema.ModelInfo): ModelCapabilities {
+  const reasoning = grokReasoningOptionsFromModel(model);
+  return reasoning.options.length > 0
+    ? createModelCapabilities({
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: reasoning.options.map((option) => ({
+              id: option.value,
+              label: option.label,
+              ...(option.description ? { description: option.description } : {}),
+              ...(option.isDefault ? { isDefault: true } : {}),
+            })),
+            ...(reasoning.currentValue ? { currentValue: reasoning.currentValue } : {}),
+          },
+        ],
+      })
+    : EMPTY_CAPABILITIES;
+}
+
+function buildGrokDiscoveredModelsFromSessionModelState(
   modelState: EffectAcpSchema.SessionModelState | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   if (!modelState || modelState.availableModels.length === 0) {
@@ -244,12 +244,11 @@ export function buildGrokDiscoveredModelsFromSessionModelState(
         return undefined;
       }
       seen.add(slug);
-      const meta = isRecord(model._meta) ? model._meta : undefined;
       return {
         slug,
         name: model.name.trim() || slug,
         isCustom: false,
-        capabilities: buildGrokCapabilitiesFromModelMeta(meta),
+        capabilities: buildGrokModelCapabilities(model),
       };
     })
     .filter((model): model is ServerProviderModel => model !== undefined);
@@ -273,7 +272,6 @@ function grokBillingWindowDurationMinutes(start: string | null, end: string | nu
   return Number.isFinite(duration) && duration >= 0 ? Math.round(duration / 60_000) : null;
 }
 
-/** Normalizes the consumer billing shape reported by Grok's `x.ai/billing` ACP extension. */
 export function buildGrokSubscriptionUsageFromBilling(
   input: unknown,
 ): ProviderSubscriptionUsage | undefined {
@@ -286,9 +284,7 @@ export function buildGrokSubscriptionUsageFromBilling(
   const response = decoded.value;
   const plan = response.subscriptionTier?.trim() || response.subscription_tier?.trim() || null;
   const config = response.config ?? null;
-  if (!config) {
-    return { provider: "grok", plan, windows: [] };
-  }
+  if (!config) return { provider: "grok", plan, windows: [] };
 
   const currentPeriod = config.currentPeriod ?? null;
   const start = normalizedIsoDateTime(currentPeriod?.start ?? config.billingPeriodStart);
@@ -299,17 +295,14 @@ export function buildGrokSubscriptionUsageFromBilling(
     ? ("weekly" as const)
     : periodType?.includes("MONTHLY")
       ? ("monthly" as const)
-      : config.monthlyLimit !== null && config.monthlyLimit !== undefined
+      : config.monthlyLimit != null
         ? ("monthly" as const)
         : windowDurationMinutes === 10_080
           ? ("weekly" as const)
           : undefined;
-
   const directPercent = config.creditUsagePercent;
   const legacyLimit = Math.abs(config.monthlyLimit?.val ?? 0);
   const legacyUsed = Math.abs(config.used?.val ?? 0);
-  // GetGrokCreditsConfig omits zero-valued proto3 scalars, so a current period
-  // without creditUsagePercent represents 0% usage rather than an unknown limit.
   const usedPercent =
     typeof directPercent === "number" && Number.isFinite(directPercent)
       ? directPercent
@@ -319,10 +312,7 @@ export function buildGrokSubscriptionUsageFromBilling(
           ? 0
           : undefined;
 
-  if (!kind || usedPercent === undefined) {
-    return { provider: "grok", plan, windows: [] };
-  }
-
+  if (!kind || usedPercent === undefined) return { provider: "grok", plan, windows: [] };
   return {
     provider: "grok",
     plan,
@@ -350,10 +340,7 @@ interface GrokAcpSnapshot {
   readonly subscriptionUsage?: ProviderSubscriptionUsage;
 }
 
-/**
- * Gives ACP startup its full discovery budget before attempting optional
- * billing enrichment, which has its own shorter timeout.
- */
+/** Gives model discovery its full timeout before optional billing enrichment runs. */
 export function buildGrokAcpSnapshot<E, R, RequestE, RequestR>(
   start: Effect.Effect<EffectAcpSchema.SessionModelState | null | undefined, E, R>,
   request: (method: string, payload: unknown) => Effect.Effect<unknown, RequestE, RequestR>,
@@ -361,10 +348,7 @@ export function buildGrokAcpSnapshot<E, R, RequestE, RequestR>(
 ): Effect.Effect<Option.Option<GrokAcpSnapshot>, E, R | RequestR> {
   return Effect.gen(function* () {
     const modelState = yield* start.pipe(Effect.timeoutOption(discoveryTimeoutMs));
-    if (Option.isNone(modelState)) {
-      return Option.none<GrokAcpSnapshot>();
-    }
-
+    if (Option.isNone(modelState)) return Option.none<GrokAcpSnapshot>();
     const billing = yield* optionalProviderEnrichment(requestGrokSubscriptionUsage(request));
     const subscriptionUsage = Option.isSome(billing) ? billing.value : undefined;
     return Option.some({
@@ -374,7 +358,7 @@ export function buildGrokAcpSnapshot<E, R, RequestE, RequestR>(
   });
 }
 
-const probeGrokViaAcp = (
+const discoverGrokModelsViaAcp = (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
 ) =>
@@ -414,7 +398,7 @@ const runGrokVersionCommand = (
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
-  acpProbe: typeof probeGrokViaAcp = probeGrokViaAcp,
+  cwd?: string,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -505,7 +489,11 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const discoveryExit = yield* acpProbe(grokSettings, environment).pipe(Effect.exit);
+  const skills = yield* discoverGrokSkills(grokSettings, environment, cwd);
+
+  const discoveryExit = yield* discoverGrokModelsViaAcp(grokSettings, environment).pipe(
+    Effect.exit,
+  );
   if (Exit.isFailure(discoveryExit)) {
     yield* Effect.logWarning("Grok ACP model discovery failed", {
       errorTag: causeErrorTag(discoveryExit.cause),
@@ -515,6 +503,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       enabled: grokSettings.enabled,
       checkedAt,
       models: fallbackModels,
+      skills,
       probe: {
         installed: true,
         version,
@@ -533,6 +522,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       enabled: grokSettings.enabled,
       checkedAt,
       models: fallbackModels,
+      skills,
       probe: {
         installed: true,
         version,
@@ -554,6 +544,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     enabled: grokSettings.enabled,
     checkedAt,
     models,
+    skills,
     ...(acpSnapshot.subscriptionUsage ? { subscriptionUsage: acpSnapshot.subscriptionUsage } : {}),
     probe: {
       installed: true,
