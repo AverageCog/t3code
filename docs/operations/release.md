@@ -174,9 +174,11 @@ One-time Vercel dashboard setup:
 ## Custom fork desktop nightlies
 
 The custom `Code Slave` desktop build has its own lightweight release workflow at
-`.github/workflows/custom-fork-platform-release.yml`. It runs daily at 08:00 UTC and can also be
-started manually with `channel=nightly`. Scheduled runs compare `main` with the last published
-`fork-v*-nightly.*` tag and do nothing when the commit is unchanged.
+`.github/workflows/custom-fork-platform-release.yml`. It builds a nightly after every push to
+`main`, runs a daily fallback at 08:00 UTC, and can also be started manually with
+`channel=nightly`. A newer push cancels an obsolete in-progress push build. Scheduled fallback
+runs compare `main` with the last published `fork-v*-nightly.*` tag and do nothing when the commit
+is unchanged.
 
 Custom nightly versions use the form
 `YYYY.M.DHHMMSS-nightly.YYYYMMDD.<run_number>` (the month and stable-part day are not zero-padded).
