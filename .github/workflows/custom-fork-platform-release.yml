@@ -78,7 +78,7 @@ jobs:
             update_channel=nightly
 
             if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-              last_nightly_tag=$(git tag --list 'fork-v*-nightly.*' --sort=-creatordate | head -n 1)
+              last_nightly_tag=$(git tag --list 'v[0-9][0-9][0-9][0-9].*-nightly.*' 'fork-v*-nightly.*' --sort=-creatordate | head -n 1)
               if [[ -n "$last_nightly_tag" && "$(git rev-parse "$last_nightly_tag^{commit}")" == "$source_sha" ]]; then
                 echo "No changes on main since $last_nightly_tag. Skipping."
                 echo "should_build=false" >> "$GITHUB_OUTPUT"
@@ -89,7 +89,8 @@ jobs:
             version_base=$(date -u '+%Y.%-m.%-d%H%M%S')
             nightly_date=$(date -u '+%Y%m%d')
             version="$version_base-nightly.$nightly_date.$GITHUB_RUN_NUMBER"
-            tag="fork-v$version"
+            # electron-updater parses prerelease channels from a SemVer-compatible tag.
+            tag="v$version"
           else
             update_channel=latest
             version="${DISPATCH_VERSION#fork-v}"

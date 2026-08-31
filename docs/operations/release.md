@@ -177,16 +177,18 @@ The custom `Code Slave` desktop build has its own lightweight release workflow a
 `.github/workflows/custom-fork-platform-release.yml`. It builds a nightly after every push to
 `main`, runs a daily fallback at 08:00 UTC, and can also be started manually with
 `channel=nightly`. A newer push cancels an obsolete in-progress push build. Scheduled fallback
-runs compare `main` with the last published `fork-v*-nightly.*` tag and do nothing when the commit
-is unchanged.
+runs compare `main` with the last published custom nightly tag and do nothing when the commit is
+unchanged.
 
 Custom nightly versions use the form
 `YYYY.M.DHHMMSS-nightly.YYYYMMDD.<run_number>` (the month and stable-part day are not zero-padded).
 The date-based stable portion keeps a new nightly
 newer than the fork's date-based stable releases, while the suffix selects Electron's dedicated
-`nightly` updater manifests. The workflow builds macOS arm64, Windows x64, and Linux x64 artifacts,
-then publishes the GitHub prerelease only after all three builds succeed. Failed builds therefore
-do not leave a partial update visible and are retried by the next scheduled run.
+`nightly` updater manifests. Nightly GitHub tags use `v<version>` because `electron-updater` parses
+the tag as SemVer when selecting a prerelease channel; stable custom releases retain their
+`fork-v<version>` tags. The workflow builds macOS arm64, Windows x64, and Linux x64 artifacts, then
+publishes the GitHub prerelease only after all three builds succeed. Failed builds therefore do not
+leave a partial update visible and are retried by the next scheduled run.
 
 To follow these builds from an installed custom desktop app, choose **Nightly** under
 **Settings → General → About → Update track**. Choose **Stable** there to return to custom stable
