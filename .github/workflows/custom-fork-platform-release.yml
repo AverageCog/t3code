@@ -168,14 +168,12 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Install ImageMagick
+      - name: Install Linux desktop build prerequisites
         if: matrix.platform == 'linux'
         shell: bash
         run: |
-          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y imagemagick
-          fi
+          sudo apt-get update
+          sudo apt-get install -y imagemagick libsecret-1-dev pkg-config
 
       - name: Build desktop update
         shell: bash
