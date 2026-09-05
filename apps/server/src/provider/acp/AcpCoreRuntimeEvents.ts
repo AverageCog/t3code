@@ -4,16 +4,20 @@ import {
   type CanonicalRequestType,
   type EventId,
   type ProviderApprovalDecision,
+  type ProviderApprovalOption,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
   type ThreadId,
-  type ThreadTokenUsageSnapshot,
-  type ToolLifecycleItemType,
   type TurnId,
 } from "@t3tools/contracts";
 
-import type { AcpPermissionRequest, AcpPlanUpdate, AcpToolCallState } from "./AcpRuntimeModel.ts";
+import {
+  type AcpPermissionRequest,
+  type AcpPlanUpdate,
+  type AcpToolCallState,
+  canonicalItemTypeFromAcpToolKind,
+} from "./AcpRuntimeModel.ts";
 
 type AcpAdapterRawSource = Extract<
   RuntimeEventRawSource,
@@ -45,22 +49,6 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
   }
 }
 
-function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
-  switch (kind) {
-    case "execute":
-      return "command_execution";
-    case "edit":
-    case "delete":
-    case "move":
-      return "file_change";
-    case "search":
-    case "fetch":
-      return "web_search";
-    default:
-      return "dynamic_tool_call";
-  }
-}
-
 function runtimeItemStatusFromAcpToolStatus(
   status: AcpToolCallState["status"],
 ): "inProgress" | "completed" | "failed" | undefined {
@@ -84,6 +72,7 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly turnId: TurnId | undefined;
   readonly requestId: RuntimeRequestId;
   readonly permissionRequest: AcpPermissionRequest;
+  readonly approvalOptions?: ReadonlyArray<ProviderApprovalOption>;
   readonly detail: string;
   readonly args: unknown;
   readonly source: AcpAdapterRawSource;
@@ -101,6 +90,7 @@ export function makeAcpRequestOpenedEvent(input: {
       requestType: canonicalRequestTypeFromAcpKind(input.permissionRequest.kind),
       detail: input.detail,
       args: input.args,
+      ...(input.approvalOptions !== undefined ? { options: input.approvalOptions } : {}),
     },
     raw: {
       source: input.source,
@@ -220,6 +210,7 @@ export function makeAcpContentDeltaEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
+  readonly streamKind?: "assistant_text" | "reasoning_text";
   readonly text: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
@@ -231,7 +222,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: "assistant_text",
+      streamKind: input.streamKind ?? "assistant_text",
       delta: input.text,
     },
     raw: {
@@ -239,54 +230,5 @@ export function makeAcpContentDeltaEvent(input: {
       method: "session/update",
       payload: input.rawPayload,
     },
-  };
-}
-
-export function snapshotFromAcpUsageUpdate(input: {
-  readonly used: number;
-  readonly size: number;
-}): ThreadTokenUsageSnapshot | undefined {
-  if (!Number.isFinite(input.used) || input.used <= 0) {
-    return undefined;
-  }
-  const usedTokens = Math.trunc(input.used);
-  const maxTokens =
-    Number.isFinite(input.size) && input.size > 0 ? Math.trunc(input.size) : undefined;
-  return {
-    usedTokens: maxTokens !== undefined ? Math.min(usedTokens, maxTokens) : usedTokens,
-    lastUsedTokens: maxTokens !== undefined ? Math.min(usedTokens, maxTokens) : usedTokens,
-    ...(maxTokens !== undefined ? { maxTokens } : {}),
-    compactsAutomatically: true,
-  };
-}
-
-export function makeAcpTokenUsageEvent(input: {
-  readonly stamp: AcpEventStamp;
-  readonly provider: ProviderDriverKind;
-  readonly threadId: ThreadId;
-  readonly turnId: TurnId | undefined;
-  readonly usage: ThreadTokenUsageSnapshot;
-  readonly source?: AcpAdapterRawSource;
-  readonly method?: string;
-  readonly rawPayload?: unknown;
-}): ProviderRuntimeEvent {
-  return {
-    type: "thread.token-usage.updated",
-    ...input.stamp,
-    provider: input.provider,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    payload: {
-      usage: input.usage,
-    },
-    ...(input.rawPayload !== undefined
-      ? {
-          raw: {
-            source: input.source ?? "acp.jsonrpc",
-            method: input.method ?? "session/update",
-            payload: input.rawPayload,
-          },
-        }
-      : {}),
   };
 }

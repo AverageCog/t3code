@@ -1,89 +1,133 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { lookupRate, parseRateTable, priceUsage, withLocalFallbackRates } from "./usagePricing.ts";
+import {
+  cacheSavingsUsd,
+  createOverrideRateTable,
+  lookupRate,
+  parseRateTable,
+  priceUsage,
+} from "./usagePricing.ts";
 
-describe("lookupRate", () => {
-  const table = parseRateTable({
-    "xai/grok-4.5": {
-      input_cost_per_token: 2e-6,
-      output_cost_per_token: 6e-6,
-      cache_read_input_token_cost: 3e-7,
-    },
-  });
-
-  it("strips a provider prefix", () => {
-    expect(lookupRate(table, "xai/grok-4.5")?.inputCostPerToken).toBe(2e-6);
-  });
-
-  it("matches Grok CLI *-build variants to the published base model", () => {
-    expect(lookupRate(table, "grok-4.5-build")?.outputCostPerToken).toBe(6e-6);
-  });
-
-  it("does not invent a rate for an unknown model", () => {
-    expect(lookupRate(table, "not-a-real-model")).toBeNull();
-  });
-
-  it("fills in grok-4.6 when LiteLLM has no row", () => {
-    const rate = lookupRate(withLocalFallbackRates(table), "grok-4.6-build");
-    expect(rate).toEqual({
-      inputCostPerToken: 2e-6,
-      outputCostPerToken: 6e-6,
-      cacheReadCostPerToken: 5e-7,
-      cacheCreationCostPerToken: 2e-6,
-    });
-  });
-
-  it("lets a LiteLLM grok-4.6 row replace the local fallback", () => {
-    const withLiteLlm = withLocalFallbackRates(
-      parseRateTable({
-        "xai/grok-4.6": {
-          input_cost_per_token: 9e-6,
-          output_cost_per_token: 8e-6,
-          cache_read_input_token_cost: 1e-7,
-        },
-      }),
-    );
-    expect(lookupRate(withLiteLlm, "grok-4.6-build")?.inputCostPerToken).toBe(9e-6);
-  });
+const rate = (input: number, cacheRead?: number) => ({
+  input_cost_per_token: input,
+  output_cost_per_token: input * 5,
+  ...(cacheRead === undefined ? {} : { cache_read_input_token_cost: cacheRead }),
 });
 
-describe("priceUsage", () => {
-  const table = parseRateTable({
-    "grok-4.5": {
-      input_cost_per_token: 2e-6,
-      output_cost_per_token: 6e-6,
-      cache_read_input_token_cost: 3e-7,
-    },
-  });
+describe("usage pricing", () => {
   const totals = {
-    uncachedInputTokens: 100,
-    cachedInputTokens: 50,
-    cacheCreationTokens: 0,
-    outputTokens: 10,
-    reasoningTokens: 4,
+    uncachedInputTokens: 1_000_000,
+    cachedInputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    reasoningTokens: 500_000,
   };
 
-  it("prefers a provider-reported cost over the rate table", () => {
-    expect(priceUsage(table, "grok-4.5-build", totals, 0.12)).toEqual({
-      costUsd: 0.12,
-      costSource: "providerReported",
+  it("uses custom token rates ahead of public and provider-reported costs", () => {
+    const table = parseRateTable({ "example-model": rate(1) });
+    const overrides = createOverrideRateTable({
+      "example-model": {
+        inputCostPerMillionTokens: 2,
+        outputCostPerMillionTokens: 8,
+        cacheReadCostPerMillionTokens: 0.5,
+        cacheWriteCostPerMillionTokens: 3,
+      },
     });
+
+    for (const reportedCostUsd of [null, 99]) {
+      expect(priceUsage(table, "example-model", totals, reportedCostUsd, overrides)).toEqual({
+        costUsd: 13.5,
+        costSource: "modelPriced",
+      });
+    }
+    expect(cacheSavingsUsd(table, "example-model", totals, overrides)).toBe(1.5);
   });
 
-  it("prices a Grok build variant from the base model rates", () => {
-    const priced = priceUsage(table, "grok-4.5-build", totals, null);
-    expect(priced.costSource).toBe("modelPriced");
-    expect(priced.costUsd).toBeCloseTo(100 * 2e-6 + 50 * 3e-7 + 10 * 6e-6, 12);
+  it("prices unknown models offline and uses input prices for omitted cache rates", () => {
+    const table = parseRateTable({});
+    const overrides = createOverrideRateTable({
+      "example-model": { inputCostPerMillionTokens: 2, outputCostPerMillionTokens: 8 },
+    });
+
+    expect(priceUsage(table, "example-model", totals, null, overrides)).toEqual({
+      costUsd: 14,
+      costSource: "modelPriced",
+    });
+    expect(cacheSavingsUsd(table, "example-model", totals, overrides)).toBe(0);
   });
 
-  it("prices grok-4.6 from the short-context fallback", () => {
-    const priced = priceUsage(
-      withLocalFallbackRates(parseRateTable({})),
-      "grok-4.6-build",
-      totals,
-      null,
+  it("preserves explicit zero rates and matches only the exact trimmed model ID", () => {
+    const table = parseRateTable({});
+    const overrides = createOverrideRateTable({
+      " vendor/example-model[1m] ": {
+        inputCostPerMillionTokens: 0,
+        outputCostPerMillionTokens: 0,
+      },
+    });
+    expect(priceUsage(table, " vendor/example-model[1m] ", totals, 99, overrides)).toEqual({
+      costUsd: 0,
+      costSource: "modelPriced",
+    });
+    for (const model of [
+      "example-model[1m]",
+      "vendor/example-model",
+      "vendor/Example-model[1m]",
+      "other/example-model[1m]",
+    ]) {
+      expect(priceUsage(table, model, totals, null, overrides).costSource).toBe("unpriced");
+      expect(priceUsage(table, model, totals, 99, overrides)).toEqual({
+        costUsd: 99,
+        costSource: "providerReported",
+      });
+    }
+  });
+
+  it("keeps the canonical Fable rate separate from DeepInfra in either order", () => {
+    const canonical = ["claude-fable-5", rate(1e-5, 1e-6)] as const;
+    const deepInfra = ["deepinfra/anthropic/claude-fable-5", rate(1e-5)] as const;
+
+    for (const entries of [
+      [canonical, deepInfra],
+      [deepInfra, canonical],
+    ]) {
+      const table = parseRateTable(Object.fromEntries(entries));
+
+      expect(lookupRate(table, "claude-fable-5")?.cacheReadCostPerToken).toBe(1e-6);
+      expect(lookupRate(table, "deepinfra/anthropic/claude-fable-5")?.cacheReadCostPerToken).toBe(
+        1e-5,
+      );
+      expect(lookupRate(table, "other/claude-fable-5")).toBeNull();
+    }
+  });
+
+  it("prices a bracketed context-tier variant at the base model's rate", () => {
+    const table = parseRateTable({ "claude-fable-5-1": rate(1e-5, 2.5e-7) });
+
+    expect(lookupRate(table, "claude-fable-5-1[1m]")).toEqual(
+      lookupRate(table, "claude-fable-5-1"),
     );
-    expect(priced.costSource).toBe("modelPriced");
-    expect(priced.costUsd).toBeCloseTo(100 * 2e-6 + 50 * 5e-7 + 10 * 6e-6, 12);
+    expect(lookupRate(table, "anthropic/Claude-Fable-5-1[1m]")).toBeNull();
+  });
+
+  it("adds a bare alias when every qualified entry has the same rate", () => {
+    const table = parseRateTable({
+      "provider-a/example-model": rate(1),
+      "provider-b/example-model": rate(1),
+    });
+
+    expect(lookupRate(table, "example-model")).toEqual(
+      lookupRate(table, "provider-a/example-model"),
+    );
+  });
+
+  it("leaves an ambiguous bare name unpriced", () => {
+    const table = parseRateTable({
+      "provider-a/example-model": rate(1),
+      "provider-b/example-model": rate(3),
+    });
+
+    expect(lookupRate(table, "provider-a/example-model")?.inputCostPerToken).toBe(1);
+    expect(lookupRate(table, "provider-b/example-model")?.inputCostPerToken).toBe(3);
+    expect(lookupRate(table, "example-model")).toBeNull();
   });
 });

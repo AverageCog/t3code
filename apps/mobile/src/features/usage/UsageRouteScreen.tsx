@@ -1,19 +1,6 @@
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import {
-  expectedSubscriptionProvider,
-  maskSubscriptionEmail,
-  type SubscriptionEnvironmentUsageStatus,
-  type SubscriptionUsageStatus,
-} from "@t3tools/client-runtime/state/subscription-usage";
-import type {
-  ServerProvider,
-  SubscriptionUsageProvider,
-  SubscriptionUsageWindow,
-} from "@t3tools/contracts";
 import type { DailyTotals, MergedUsage } from "@t3tools/shared/usageMerge";
 import {
-  DEFAULT_USAGE_PAGE_SELECTION,
   enumerateDays,
   enumerateHourStarts,
   formatCount,
@@ -23,78 +10,62 @@ import {
   formatTokens,
   formatUsd,
   makeWindow,
-  type UsageHistoryDays,
-  type UsagePageSelection,
 } from "@t3tools/shared/usageFormat";
-import { AsyncResult } from "effect/unstable/reactivity";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Platform, Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
+import { cn } from "../../lib/cn";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
-import { useSubscriptionUsage, useUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { UsageDailyChart } from "./UsageDailyChart";
+import { UsageLimitsSection, useRefreshLimits } from "./UsageLimitsSection";
 import type { UsageChartMetric } from "./usageChartData";
 import { PROVIDER_LABEL, useProviderColors } from "./usageProviders";
 
+type UsageTab = "usage" | "limits";
+const TAB_OPTIONS = [
+  { value: "usage", label: "Usage" },
+  { value: "limits", label: "Limits" },
+] as const satisfies readonly { value: UsageTab; label: string }[];
+
+// Labels are abbreviated to share a row with the metric toggle; screen
+// readers get the full phrase.
 const WINDOW_OPTIONS = [
-  { days: 1, label: "Past 24h" },
-  { days: 7, label: "7 days" },
-  { days: 30, label: "30 days" },
-  { days: 90, label: "90 days" },
+  { value: 1, label: "24h", accessibilityLabel: "Past 24 hours" },
+  { value: 7, label: "7d", accessibilityLabel: "Past 7 days" },
+  { value: 30, label: "30d", accessibilityLabel: "Past 30 days" },
+  { value: 90, label: "90d", accessibilityLabel: "Past 90 days" },
 ] as const;
 
-const VIEW_OPTIONS: readonly {
-  readonly value: UsagePageSelection;
-  readonly label: string;
-}[] = [
-  ...WINDOW_OPTIONS.map((option) => ({ value: option.days, label: option.label })),
-  {
-    value: "subscriptions",
-    label: "Subscriptions",
-  },
-];
+const METRIC_OPTIONS = [
+  { value: "cost", label: "Cost" },
+  { value: "tokens", label: "Tokens" },
+] as const satisfies readonly { value: UsageChartMetric; label: string }[];
 
 const CHART_HEIGHT = 180;
 
+/**
+ * Two tabs over one screen. Usage is the transcript-derived spend for a
+ * period; Limits is the live subscription quota, which has no period. Both
+ * pull to refresh, each refreshing its own data.
+ */
 export function UsageRouteScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const preferencesResult = useAtomValue(mobilePreferencesAtom);
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
-  const usageSelection = AsyncResult.isSuccess(preferencesResult)
-    ? (preferencesResult.value.usagePageSelection ?? DEFAULT_USAGE_PAGE_SELECTION)
-    : DEFAULT_USAGE_PAGE_SELECTION;
-  const activeView = usageSelection === "subscriptions" ? "subscriptions" : "history";
-  const [windowSelection, setWindowSelection] = useState(() => {
-    const days = usageSelection === "subscriptions" ? DEFAULT_USAGE_PAGE_SELECTION : usageSelection;
-    return {
-      days,
-      window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
-    };
-  });
-  const [subscriptionWindow, setSubscriptionWindow] = useState(() => makeWindow(30));
+  const [tab, setTab] = useState<UsageTab>("usage");
+  const [windowSelection, setWindowSelection] = useState(() => ({
+    days: 30,
+    window: makeWindow(30),
+  }));
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
-  const { merged, environments, isPending, isPartial, refresh } = useUsage(
-    window,
-    activeView === "history",
-  );
-  const subscriptionHistory = useUsage(subscriptionWindow, activeView === "subscriptions");
-  const subscriptions = useSubscriptionUsage();
-
-  useEffect(() => {
-    if (usageSelection === "subscriptions" || usageSelection === windowSelection.days) return;
-    setWindowSelection({
-      days: usageSelection,
-      window: makeWindow(usageSelection, undefined, usageSelection === 1 ? "hour" : "day"),
-    });
-  }, [usageSelection, windowSelection.days]);
+  const { merged, environments, isPending, isPartial, refresh } = useUsage(window);
+  const limits = useRefreshLimits();
 
   const days = useMemo(
     () => enumerateDays(window.sinceDay, window.untilDay),
@@ -123,9 +94,9 @@ export function UsageRouteScreen() {
   // The pull spinner tracks re-scans of environments that have answered
   // before. The initial scan renders its own placeholder, and an unreachable
   // environment stays pending forever — neither may pin the spinner on.
-  const historyRefreshing = environments.some((entry) => entry.isPending && entry.summary !== null);
-  const selectWindow = (days: UsageHistoryDays) => {
-    savePreferences({ usagePageSelection: days });
+  const refreshingUsage = environments.some((entry) => entry.isPending && entry.summary !== null);
+  const showingLimits = tab === "limits";
+  const selectWindow = (days: number) => {
     setWindowSelection({
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
@@ -144,22 +115,6 @@ export function UsageRouteScreen() {
       setWindowSelection({ days: windowDays, window: nextWindow });
     }
   };
-  const refreshView = () => {
-    if (activeView === "subscriptions") {
-      void subscriptions.refresh();
-      const nextWindow = makeWindow(30);
-      if (
-        nextWindow.sinceDay === subscriptionWindow.sinceDay &&
-        nextWindow.untilDay === subscriptionWindow.untilDay
-      ) {
-        subscriptionHistory.refresh();
-      } else {
-        setSubscriptionWindow(nextWindow);
-      }
-      return;
-    }
-    refreshWindow();
-  };
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
@@ -170,6 +125,9 @@ export function UsageRouteScreen() {
         </>
       ) : null}
       <ScrollView
+        // Remount at each tab's native top. Scrolling to y: 0 ignores iOS's
+        // automatic header inset and hides the tab bar under the header.
+        key={tab}
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
         className="flex-1"
@@ -177,43 +135,35 @@ export function UsageRouteScreen() {
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         refreshControl={
           <RefreshControl
-            refreshing={
-              activeView === "subscriptions" ? subscriptions.isRefreshing : historyRefreshing
-            }
-            onRefresh={refreshView}
+            refreshing={showingLimits ? limits.refreshing : refreshingUsage}
+            onRefresh={showingLimits ? () => void limits.refresh() : refreshWindow}
           />
         }
       >
-        <SegmentedControl
-          options={VIEW_OPTIONS}
-          selected={usageSelection}
-          onSelect={(selection) => {
-            if (selection === "subscriptions") {
-              savePreferences({ usagePageSelection: "subscriptions" });
-            } else {
-              selectWindow(selection);
-            }
-          }}
-        />
+        <SegmentedControl options={TAB_OPTIONS} selected={tab} onSelect={setTab} role="tab" />
 
-        {activeView === "subscriptions" ? (
-          <SubscriptionUsageContent
-            environments={subscriptions.environments}
-            statuses={subscriptions.statuses}
-            isPending={subscriptions.isPending}
-            history={subscriptionHistory.merged}
-            historyDay={subscriptionWindow.untilDay}
-            isHistoryPending={subscriptionHistory.isPending || subscriptionHistory.isPartial}
-            hasHistoryResponse={subscriptionHistory.environments.some(
-              (environment) => environment.summary !== null,
-            )}
-            isHistoryIncomplete={
-              subscriptionHistory.environments.some((environment) => environment.error !== null) ||
-              subscriptionHistory.merged.staleEnvironments.length > 0
-            }
-          />
+        {showingLimits ? (
+          <UsageLimitsSection now={limits.now} failedLabels={limits.failedLabels} />
         ) : (
           <>
+            {/* Period and metric together: neither applies to Limits, and
+                both change every number below, so they share one bar. */}
+            <View className="flex-row items-center gap-3">
+              <SegmentedControl
+                options={WINDOW_OPTIONS}
+                selected={windowDays}
+                onSelect={selectWindow}
+                size="compact"
+                className="flex-1"
+              />
+              <SegmentedControl
+                options={METRIC_OPTIONS}
+                selected={metric}
+                onSelect={setMetric}
+                size="compact"
+                className="w-36"
+              />
+            </View>
             <UsageCoverageNotice
               environments={environments}
               merged={merged}
@@ -234,7 +184,6 @@ export function UsageRouteScreen() {
                   days={chartDays}
                   daily={chartTotals}
                   metric={metric}
-                  onMetricChange={setMetric}
                   sinceDay={window.sinceDay}
                   untilDay={window.untilDay}
                   isPast24Hours={isPast24Hours}
@@ -252,378 +201,49 @@ export function UsageRouteScreen() {
   );
 }
 
-function subscriptionPlanLabel(
-  provider: SubscriptionUsageProvider,
-  plan: string | null,
-  fallback: string | undefined,
-): string {
-  if (fallback) return fallback.replace(/ Subscription$/, "");
-  if (!plan || plan === "unknown")
-    return `${provider === "grok" ? "Grok" : provider === "claude" ? "Claude" : "ChatGPT"} subscription`;
-  const normalizedPlan = plan.replaceAll("_", " ");
-  if (provider === "grok") return normalizedPlan;
-  if (provider === "claude") {
-    return normalizedPlan.toLowerCase().startsWith("claude")
-      ? normalizedPlan
-      : `Claude ${normalizedPlan}`;
-  }
-  return `ChatGPT ${normalizedPlan}`;
-}
-
-function subscriptionWindowLabel(window: SubscriptionUsageWindow): string {
-  let label: string;
-  if (window.kind === "weekly") label = "Weekly limit";
-  else if (window.kind === "monthly") label = "Monthly limit";
-  else if (window.windowDurationMinutes === 300) label = "5-hour limit";
-  else if (window.windowDurationMinutes === 10_080) label = "Weekly limit";
-  else if (window.windowDurationMinutes !== null) {
-    if (window.windowDurationMinutes % 1_440 === 0) {
-      label = `${window.windowDurationMinutes / 1_440}-day limit`;
-    } else if (window.windowDurationMinutes % 60 === 0) {
-      label = `${window.windowDurationMinutes / 60}-hour limit`;
-    } else label = window.kind === "primary" ? "5-hour limit" : "Weekly limit";
-  } else label = window.kind === "primary" ? "5-hour limit" : "Weekly limit";
-  return window.scope ? `${window.scope.label} ${label.toLocaleLowerCase()}` : label;
-}
-
-function subscriptionUnavailableMessage(provider: ServerProvider): string {
-  if (provider.driver === "grok") {
-    return "This Grok account or CLI version did not report subscription limits. Sign in to Grok, update the CLI, and refresh to try again.";
-  }
-  if (provider.driver === "claudeAgent") {
-    if (provider.auth.status !== "authenticated") {
-      return "Sign in to Claude Code with a Claude subscription to read subscription limits.";
-    }
-    if (
-      provider.auth.type === "apiKey" ||
-      provider.auth.type === "bedrock" ||
-      provider.auth.type === "vertex" ||
-      provider.auth.type === "foundry" ||
-      provider.auth.type === "anthropicAws" ||
-      provider.auth.type === "mantle" ||
-      provider.auth.type === "gateway"
-    ) {
-      return "This Claude instance uses API billing, so it has no Claude subscription limits.";
-    }
-    return "This Claude account or Claude Code version did not report subscription limits. Update Claude Code and refresh to try again.";
-  }
-  if (provider.auth.status !== "authenticated") {
-    return "Sign in to Codex with ChatGPT to read subscription limits.";
-  }
-  if (provider.auth.type !== "chatgpt") {
-    return "This Codex instance uses API billing, so it has no ChatGPT subscription limits.";
-  }
-  return "This Codex version did not report subscription limits. Update Codex and refresh to try again.";
-}
-
-function subscriptionResetLabel(resetsAt: string | null): string {
-  if (resetsAt === null) return "Reset time unavailable";
-  const reset = new Date(resetsAt);
-  if (Number.isNaN(reset.getTime())) return "Reset time unavailable";
-  return `Resets ${reset.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })}`;
-}
-
-function SubscriptionUsageContent(props: {
-  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
-  readonly statuses: readonly SubscriptionUsageStatus[];
-  readonly isPending: boolean;
-  readonly history: MergedUsage;
-  readonly historyDay: string;
-  readonly isHistoryPending: boolean;
-  readonly hasHistoryResponse: boolean;
-  readonly isHistoryIncomplete: boolean;
-}) {
-  const [revealedEmails, setRevealedEmails] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleEmail = (email: string) => {
-    setRevealedEmails((current) => {
-      const next = new Set(current);
-      if (next.has(email)) next.delete(email);
-      else next.add(email);
-      return next;
-    });
-  };
-
-  if (props.isPending) {
-    return (
-      <Text className="py-16 text-center text-base text-foreground-muted">
-        Reading subscription limits…
-      </Text>
-    );
-  }
-
-  if (props.statuses.length === 0) {
-    return (
-      <View className="gap-4">
-        <SubscriptionCoverageNotice environments={props.environments} />
-        <View className="gap-1 rounded-[24px] border-continuous bg-card p-5">
-          <Text className="text-center text-base font-t3-medium text-foreground">
-            No supported provider configured
-          </Text>
-          <Text className="text-center text-sm text-foreground-muted">
-            Enable Codex, Claude, or Grok and sign in to see subscription limits here.
-          </Text>
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View className="gap-4">
-      <SubscriptionCoverageNotice environments={props.environments} />
-      {props.statuses.map((status) => {
-        const { provider } = status;
-        const expectedUsageProvider = expectedSubscriptionProvider(provider) ?? "chatgpt";
-        const usage =
-          provider.subscriptionUsage?.provider === expectedUsageProvider
-            ? provider.subscriptionUsage
-            : null;
-        const providerName =
-          expectedUsageProvider === "grok"
-            ? "Grok"
-            : expectedUsageProvider === "claude"
-              ? "Claude"
-              : "ChatGPT";
-        const email = provider.auth.email?.trim();
-        const emailKey = email?.toLocaleLowerCase();
-        const emailIsConcealed = emailKey ? !revealedEmails.has(emailKey) : false;
-        const historyProvider =
-          expectedUsageProvider === "grok"
-            ? "grok"
-            : expectedUsageProvider === "claude"
-              ? "claude"
-              : "codex";
-        const today = props.history.daily
-          .find((day) => day.day === props.historyDay)
-          ?.byProvider.get(historyProvider);
-        const last30Days = props.history.providers.find(
-          (totals) => totals.provider === historyProvider,
-        );
-        const historyValue = (value: string) =>
-          props.isHistoryPending || !props.hasHistoryResponse ? "—" : value;
-        return (
-          <View
-            key={status.accountKey}
-            className="gap-5 rounded-[24px] border-continuous bg-card p-5"
-          >
-            <View className="flex-row items-start justify-between gap-3">
-              <View className="min-w-0 flex-1 gap-0.5">
-                <Text className="text-lg font-t3-medium text-foreground">{providerName}</Text>
-                <Text className="text-sm text-foreground-muted" numberOfLines={1}>
-                  {usage
-                    ? subscriptionPlanLabel(usage.provider, usage.plan, provider.auth.label)
-                    : (provider.auth.label ?? provider.displayName ?? provider.instanceId)}
-                </Text>
-              </View>
-              <Text className="text-xs tabular-nums text-foreground-tertiary">
-                {new Date(provider.checkedAt).toLocaleTimeString(undefined, {
-                  hour: "numeric",
-                  minute: "2-digit",
-                })}
-              </Text>
-            </View>
-
-            {usage && usage.windows.length > 0 ? (
-              <View className="gap-5">
-                {usage.windows.map((window) => {
-                  const remainingPercent = Math.max(0, 100 - window.usedPercent);
-                  return (
-                    <View
-                      key={`${window.kind}:${window.scope?.type ?? "overall"}:${window.scope?.id ?? "all"}`}
-                      className="gap-2"
-                    >
-                      <View className="flex-row items-baseline justify-between gap-3">
-                        <Text className="text-base text-foreground">
-                          {subscriptionWindowLabel(window)}
-                        </Text>
-                        <Text className="text-base font-t3-medium tabular-nums text-foreground">
-                          {window.usedPercent.toLocaleString(undefined, {
-                            maximumFractionDigits: 1,
-                          })}
-                          % used
-                        </Text>
-                      </View>
-                      <View className="h-2 overflow-hidden rounded-full bg-subtle">
-                        <View
-                          accessibilityRole="progressbar"
-                          accessibilityLabel={subscriptionWindowLabel(window)}
-                          accessibilityValue={{
-                            min: 0,
-                            max: 100,
-                            now: window.usedPercent,
-                          }}
-                          className={
-                            window.usedPercent >= 90
-                              ? "h-full rounded-full bg-danger-foreground"
-                              : "h-full rounded-full bg-foreground"
-                          }
-                          style={{ width: `${window.usedPercent}%` }}
-                        />
-                      </View>
-                      <View className="flex-row flex-wrap justify-between gap-x-3 gap-y-1">
-                        <Text className="text-xs text-foreground-muted">
-                          {remainingPercent.toLocaleString(undefined, {
-                            maximumFractionDigits: 1,
-                          })}
-                          % remaining
-                        </Text>
-                        <Text className="text-xs text-foreground-muted">
-                          {subscriptionResetLabel(window.resetsAt)}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            ) : (
-              <Text className="border-t border-border-subtle pt-4 text-sm text-foreground-muted">
-                {subscriptionUnavailableMessage(provider)}
-              </Text>
-            )}
-
-            <View className="gap-3 border-t border-border-subtle pt-4">
-              <View className="flex-row items-baseline justify-between gap-3">
-                <Text className="text-xs font-t3-medium uppercase tracking-wide text-foreground-muted">
-                  Token history
-                </Text>
-                <Text className="text-xs text-foreground-tertiary">API-equivalent</Text>
-              </View>
-              <View className="flex-row gap-5">
-                <SubscriptionHistoryMetric
-                  label="Cost today"
-                  value={historyValue(formatUsd(today?.costUsd ?? 0))}
-                />
-                <SubscriptionHistoryMetric
-                  label="Cost · 30 days"
-                  value={historyValue(formatUsd(last30Days?.costUsd ?? 0))}
-                />
-              </View>
-              <View className="flex-row gap-5">
-                <SubscriptionHistoryMetric
-                  label="Tokens today"
-                  value={historyValue(formatTokens(today?.totalTokens ?? 0))}
-                />
-                <SubscriptionHistoryMetric
-                  label="Tokens · 30 days"
-                  value={historyValue(formatTokens(last30Days?.totalTokens ?? 0))}
-                />
-              </View>
-              <Text className="text-xs leading-4 text-foreground-tertiary">
-                {props.isHistoryPending
-                  ? "Scanning local transcript history…"
-                  : !props.hasHistoryResponse
-                    ? "Token history is unavailable from connected environments."
-                    : props.isHistoryIncomplete
-                      ? "Some connected environments could not report current history; totals may be incomplete."
-                      : last30Days && last30Days.unpricedRecords > 0
-                        ? `${formatCount(last30Days.unpricedRecords)} records use unknown model pricing and are excluded from cost.`
-                        : last30Days && last30Days.cacheSavingsUsd > 0
-                          ? `Includes cached-token pricing, saving ${formatUsd(last30Days.cacheSavingsUsd)} over full input rates.`
-                          : "Uses provider-reported cost or cache-aware model pricing when available."}
-              </Text>
-            </View>
-
-            {email && emailKey ? (
-              <View className="flex-row border-t border-border-subtle pt-3">
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    emailIsConcealed ? "Reveal account email" : "Hide account email"
-                  }
-                  accessibilityState={{ selected: !emailIsConcealed }}
-                  onPress={() => toggleEmail(emailKey)}
-                >
-                  <Text className="text-xs text-foreground-tertiary">
-                    {emailIsConcealed ? maskSubscriptionEmail(email) : email}
-                  </Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </View>
-        );
-      })}
-
-      <Text className="px-1 text-xs text-foreground-tertiary">
-        Limits come directly from the signed-in provider account and include usage outside T3 Code.
-        Token history is combined by provider across connected environments and may not match one
-        account's limits.
-      </Text>
-    </View>
-  );
-}
-
-function SubscriptionCoverageNotice(props: {
-  readonly environments: readonly SubscriptionEnvironmentUsageStatus[];
-}) {
-  const pending = props.environments.filter((environment) => environment.isPending);
-  const failed = props.environments.filter((environment) => environment.error !== null);
-  if (pending.length === 0 && failed.length === 0) return null;
-
-  return (
-    <View className="gap-1 rounded-[16px] border-continuous bg-card px-4 py-3">
-      {pending.map((environment) => (
-        <Text key={environment.environmentId} className="text-sm text-foreground-muted">
-          {environment.label} is still reporting subscription limits.
-        </Text>
-      ))}
-      {failed.map((environment) => (
-        <Text key={environment.environmentId} className="text-sm text-foreground-muted">
-          {environment.label} could not report subscription limits.
-        </Text>
-      ))}
-      <Text className="text-sm text-foreground-muted">
-        Subscription coverage may be incomplete.
-      </Text>
-    </View>
-  );
-}
-
-function SubscriptionHistoryMetric(props: { readonly label: string; readonly value: string }) {
-  return (
-    <View className="min-w-0 flex-1">
-      <Text className="text-xs text-foreground-muted">{props.label}</Text>
-      <Text
-        className="mt-1 text-base font-t3-medium tabular-nums text-foreground"
-        numberOfLines={1}
-      >
-        {props.value}
-      </Text>
-    </View>
-  );
-}
-
 function SegmentedControl<Value extends number | string>(props: {
-  readonly options: readonly { readonly value: Value; readonly label: string }[];
+  readonly options: readonly {
+    readonly value: Value;
+    readonly label: string;
+    readonly accessibilityLabel?: string;
+  }[];
   readonly selected: Value;
   readonly onSelect: (value: Value) => void;
+  /** The tab bar is full height; filters under it are shorter so it stays primary. */
+  readonly size?: "default" | "compact";
+  /** "tab" for the view switcher; filters stay plain buttons. */
+  readonly role?: "tab" | "button";
+  readonly className?: string;
 }) {
+  const compact = props.size === "compact";
   return (
-    <View className="flex-row overflow-hidden rounded-full border-continuous bg-card">
+    <View
+      accessibilityRole={props.role === "tab" ? "tablist" : undefined}
+      className={cn(
+        "flex-row overflow-hidden rounded-full border-continuous bg-card",
+        props.className,
+      )}
+    >
       {props.options.map((option) => {
         const active = option.value === props.selected;
         return (
           <Pressable
             key={String(option.value)}
-            accessibilityRole="button"
+            accessibilityRole={props.role ?? "button"}
+            accessibilityLabel={option.accessibilityLabel}
             accessibilityState={{ selected: active }}
             onPress={() => props.onSelect(option.value)}
-            className={
-              active
-                ? "flex-1 items-center rounded-full bg-subtle-strong py-2"
-                : "flex-1 items-center py-2"
-            }
+            className={cn(
+              "flex-1 items-center justify-center rounded-full",
+              compact ? "h-9" : "h-11",
+              active && "bg-subtle-strong",
+            )}
           >
             <Text
-              adjustsFontSizeToFit
-              minimumFontScale={0.75}
-              numberOfLines={1}
-              className={
-                active ? "text-xs font-t3-medium text-foreground" : "text-xs text-foreground-muted"
-              }
+              className={cn(
+                compact ? "text-xs" : "text-sm",
+                active ? "font-t3-medium text-foreground" : "text-foreground-muted",
+              )}
             >
               {option.label}
             </Text>
@@ -640,7 +260,6 @@ function ChartCard(props: {
   readonly days: readonly string[];
   readonly daily: readonly DailyTotals[];
   readonly metric: UsageChartMetric;
-  readonly onMetricChange: (metric: UsageChartMetric) => void;
   readonly sinceDay: string;
   readonly untilDay: string;
   readonly isPast24Hours: boolean;
@@ -652,21 +271,18 @@ function ChartCard(props: {
 
   return (
     <View className="gap-4 rounded-[24px] border-continuous bg-card p-4">
-      <View className="flex-row items-start justify-between gap-3">
-        <View className="min-w-0 flex-1 gap-0.5">
-          <Text className="text-sm text-foreground-muted">
-            {metric === "cost" ? "Raw token cost" : "Processed tokens"}
-          </Text>
-          <Text className="text-4xl font-t3-bold tabular-nums text-foreground">
-            {metric === "cost" ? `${formatUsd(merged.costUsd)}*` : formatTokens(merged.totalTokens)}
-          </Text>
-          <Text className="text-sm text-foreground-muted">
-            {metric === "cost"
-              ? "* if billed at full API rate"
-              : `Across ${formatCount(merged.sessions)} sessions`}
-          </Text>
-        </View>
-        <MetricToggle metric={metric} onChange={props.onMetricChange} />
+      <View className="gap-0.5">
+        <Text className="text-sm text-foreground-muted">
+          {metric === "cost" ? "Raw token cost" : "Processed tokens"}
+        </Text>
+        <Text className="text-4xl font-t3-bold tabular-nums text-foreground">
+          {metric === "cost" ? `${formatUsd(merged.costUsd)}*` : formatTokens(merged.totalTokens)}
+        </Text>
+        <Text className="text-sm text-foreground-muted">
+          {metric === "cost"
+            ? "* if billed at full API rate"
+            : `Across ${formatCount(merged.sessions)} sessions`}
+        </Text>
       </View>
 
       {hasActivity ? (
@@ -707,38 +323,6 @@ function ChartCard(props: {
             : formatDayShort(props.untilDay)}
         </Text>
       </View>
-    </View>
-  );
-}
-
-function MetricToggle(props: {
-  readonly metric: UsageChartMetric;
-  readonly onChange: (metric: UsageChartMetric) => void;
-}) {
-  return (
-    <View className="flex-row overflow-hidden rounded-full bg-subtle">
-      {(["cost", "tokens"] as const).map((option) => {
-        const active = option === props.metric;
-        return (
-          <Pressable
-            key={option}
-            accessibilityRole="button"
-            accessibilityState={{ selected: active }}
-            onPress={() => props.onChange(option)}
-            className={active ? "rounded-full bg-subtle-strong px-3 py-1.5" : "px-3 py-1.5"}
-          >
-            <Text
-              className={
-                active
-                  ? "text-xs font-t3-medium uppercase text-foreground"
-                  : "text-xs uppercase text-foreground-muted"
-              }
-            >
-              {option}
-            </Text>
-          </Pressable>
-        );
-      })}
     </View>
   );
 }
