@@ -138,7 +138,17 @@ describe("scan cache round trip", () => {
       dedupeKey: "session-a:t3-xai-prompt-1",
     });
     const original = new Map([
-      ["/updates.jsonl", { size: 10, mtimeMs: 100, provider: "grok" as const, records: [grok] }],
+      [
+        "/updates.jsonl",
+        {
+          size: 10,
+          mtimeMs: 100,
+          provider: "grok" as const,
+          records: [grok],
+          tailRecords: [],
+          position: position(),
+        },
+      ],
     ]);
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));

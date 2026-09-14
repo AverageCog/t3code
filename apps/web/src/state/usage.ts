@@ -8,12 +8,16 @@
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
+  collectSubscriptionUsageState,
+  type SubscriptionEnvironmentProviders,
+} from "@t3tools/client-runtime/state/subscription-usage";
+import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { refreshUsage } from "@t3tools/client-runtime/state/usage";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useMemo } from "react";
@@ -22,6 +26,26 @@ import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/sh
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
+
+const subscriptionUsageAtom = Atom.make((get) => {
+  const presentations = get(environmentPresentations.presentationsAtom);
+  const environments: SubscriptionEnvironmentProviders[] = [];
+
+  for (const [environmentId, presentation] of presentations) {
+    environments.push({
+      environmentId,
+      label: presentation.entry.target.label,
+      connectionPhase: presentation.connection.phase,
+      providers: get(serverEnvironment.providersValueAtom(environmentId)),
+    });
+  }
+
+  return collectSubscriptionUsageState(environments);
+}).pipe(Atom.withLabel("web-usage:subscriptions"));
+
+export function useSubscriptionUsage() {
+  return useAtomValue(subscriptionUsageAtom);
+}
 
 export interface EnvironmentUsageStatus {
   readonly environmentId: EnvironmentId;
@@ -70,7 +94,7 @@ export interface UsageView {
    * improve by waiting on them, so they must not read as "still reporting".
    */
   readonly isPartial: boolean;
-  readonly refresh: () => void;
+  readonly refresh: (input?: UsageSummaryInput) => Promise<void>;
 }
 
 export function useUsage(
@@ -108,26 +132,17 @@ export function useUsage(
     [environments, selectedEnvironmentIds],
   );
 
-  // Refreshing only the derived atom would re-read the per-environment SWR
-  // queries within their stale window and change nothing. Refresh each
-  // environment's query so the button always rescans.
-  //
-  // Each environment refetches model pricing first, so a model released since
-  // its last daily fetch gets priced by the rescan. The rescan runs whether or
-  // not the refetch succeeds: an offline environment still recounts tokens.
-  const refresh = useCallback(() => {
-    const input = JSON.parse(windowKey) as UsageSummaryInput;
-    for (const environment of selectedEnvironments) {
-      const { environmentId } = environment;
-      const query = serverEnvironment.usageSummary({ environmentId, input });
-      void runAtomCommand(
-        appAtomRegistry,
-        serverEnvironment.refreshUsageRates,
-        { environmentId, input: {} },
-        { reportFailure: false },
-      ).finally(() => appAtomRegistry.refresh(query));
-    }
-  }, [selectedEnvironments, windowKey]);
+  const refresh = useCallback(
+    (nextInput?: UsageSummaryInput) =>
+      refreshUsage({
+        registry: appAtomRegistry,
+        server: serverEnvironment,
+        presentations: environmentPresentations,
+        environmentIds: selectedEnvironments.map(({ environmentId }) => environmentId),
+        input: nextInput ?? (JSON.parse(windowKey) as UsageSummaryInput),
+      }),
+    [selectedEnvironments, windowKey],
+  );
 
   const merged = useMemo(() => {
     const answered: EnvironmentUsage[] = selectedEnvironments.flatMap((environment) =>

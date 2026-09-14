@@ -34,7 +34,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
 import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
-import { checkClaudeProviderStatus, mapClaudeSubscriptionUsage } from "./ClaudeProvider.ts";
+import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import * as ModelManifest from "../ModelManifest.ts";
@@ -143,7 +143,6 @@ type TestClaudeCapabilities = {
   readonly tokenSource: string | undefined;
   readonly apiProvider: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
-  readonly subscriptionUsage?: NonNullable<ServerProvider["subscriptionUsage"]>;
 };
 
 function claudeCapabilities(overrides: Partial<TestClaudeCapabilities> = {}) {
@@ -371,21 +370,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
               makeCodexProbeSnapshot({
-                rateLimits: {
-                  rateLimits: {
-                    planType: "pro",
-                    primary: {
-                      usedPercent: 35,
-                      windowDurationMins: 300,
-                      resetsAt: 1_775_798_400,
-                    },
-                    secondary: {
-                      usedPercent: 72,
-                      windowDurationMins: 10_080,
-                      resetsAt: 1_776_388_800,
-                    },
-                  },
-                },
                 skills: [
                   {
                     name: "github:gh-fix-ci",
@@ -405,24 +389,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.auth.type, "chatgpt");
           assert.strictEqual(status.auth.label, "ChatGPT Pro 20x Subscription");
           assert.strictEqual(status.auth.email, "test@example.com");
-          assert.deepStrictEqual(status.subscriptionUsage, {
-            provider: "chatgpt",
-            plan: "pro",
-            windows: [
-              {
-                kind: "primary",
-                usedPercent: 35,
-                windowDurationMinutes: 300,
-                resetsAt: "2026-04-10T05:20:00.000Z",
-              },
-              {
-                kind: "secondary",
-                usedPercent: 72,
-                windowDurationMinutes: 10_080,
-                resetsAt: "2026-04-17T01:20:00.000Z",
-              },
-            ],
-          });
           assert.deepStrictEqual(status.models, [
             {
               slug: "gpt-live-codex",
@@ -1210,6 +1176,113 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             });
             assert.deepStrictEqual(afterFailure.models, []);
           }
+        });
+      });
+
+      describe("Antigravity saved account", () => {
+        const signedIn = {
+          instanceId: ProviderInstanceId.make("antigravity-personal"),
+          driver: ProviderDriverKind.make("antigravity"),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated", type: "oauth-personal", label: "Google account" },
+          checkedAt: "2026-09-05T00:00:00.000Z",
+          version: "agy_acp_server_1.1.1",
+          models: [
+            {
+              slug: "gemini-3.7-flash-high",
+              name: "Gemini 3.7 Flash",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [{ name: "plan" }],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const uncheckedMessage =
+          "Antigravity is installed. Google account access is not checked yet.";
+        const restartProbe = {
+          ...signedIn,
+          status: "warning",
+          auth: { status: "unknown" },
+          checkedAt: "2026-09-05T00:01:00.000Z",
+          message: uncheckedMessage,
+          models: [],
+        } as const satisfies ServerProvider;
+
+        it("keeps the saved Google account through restart health checks", () => {
+          const merged = mergeProviderSnapshot(signedIn, restartProbe);
+          const { message: _uncheckedMessage, ...probeWithoutMessage } = restartProbe;
+          assert.deepStrictEqual(merged, {
+            ...probeWithoutMessage,
+            status: "ready",
+            auth: signedIn.auth,
+            models: signedIn.models,
+          });
+          assert.equal("message" in merged, false);
+          // The next periodic probe reads the merged snapshot as its previous state.
+          assert.deepStrictEqual(mergeProviderSnapshot(merged, restartProbe), merged);
+        });
+
+        it("carries the account through the boot probe and a failed probe without hiding them", () => {
+          const booting = {
+            ...restartProbe,
+            installed: false,
+            version: null,
+            message: "Checking Antigravity availability.",
+          } satisfies ServerProvider;
+          assert.deepStrictEqual(mergeProviderSnapshot(signedIn, booting), {
+            ...booting,
+            auth: signedIn.auth,
+            models: signedIn.models,
+          });
+
+          const failed = {
+            ...restartProbe,
+            status: "error",
+            message: "Antigravity did not respond to its local health check within 90 seconds.",
+          } satisfies ServerProvider;
+          assert.deepStrictEqual(mergeProviderSnapshot(signedIn, failed), {
+            ...failed,
+            auth: signedIn.auth,
+            models: signedIn.models,
+          });
+        });
+
+        it("does not invent an account after sign-out, disable, uninstall, or for other providers", () => {
+          const untouched = [
+            { ...restartProbe, auth: { status: "unauthenticated" } },
+            { ...restartProbe, status: "disabled", enabled: false },
+            { ...restartProbe, status: "error", installed: false },
+            { ...restartProbe, driver: ProviderDriverKind.make("codex") },
+            // The instance was rebuilt with another sign-in method.
+            { ...restartProbe, auth: { status: "unknown", type: "gemini-api-key" } },
+          ] satisfies ReadonlyArray<ServerProvider>;
+          for (const next of untouched) {
+            const merged = mergeProviderSnapshot(signedIn, next);
+            assert.deepStrictEqual(merged.auth, next.auth);
+            assert.equal(merged.status, next.status);
+            assert.equal(merged.message, next.message);
+          }
+          assert.deepStrictEqual(
+            mergeProviderSnapshot({ ...signedIn, auth: { status: "unknown" } }, restartProbe).auth,
+            { status: "unknown" },
+          );
+          assert.equal(
+            mergeProviderSnapshot(
+              { ...signedIn, driver: ProviderDriverKind.make("codex") },
+              restartProbe,
+            ).auth.status,
+            "unknown",
+          );
+          assert.deepStrictEqual(
+            mergeProviderSnapshot(signedIn, {
+              ...restartProbe,
+              auth: { status: "unknown", type: "oauth-personal" },
+            }).auth,
+            signedIn.auth,
+          );
         });
       });
 
@@ -2572,118 +2645,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
     // ── checkClaudeProviderStatus tests ──────────────────────────
 
     describe("checkClaudeProviderStatus", () => {
-      it("maps Claude's overall and scoped subscription windows", () => {
-        assert.deepStrictEqual(
-          mapClaudeSubscriptionUsage({
-            subscription_type: "max",
-            rate_limits_available: true,
-            rate_limits: {
-              five_hour: {
-                utilization: 42.5,
-                resets_at: "2026-04-10T05:00:00Z",
-              },
-              seven_day: {
-                utilization: 67,
-                resets_at: "2026-04-17T00:00:00Z",
-              },
-              seven_day_oauth_apps: {
-                utilization: 23,
-                resets_at: "2026-04-16T00:00:00Z",
-              },
-              seven_day_opus: {
-                utilization: 100,
-                resets_at: "2026-04-15T00:00:00Z",
-              },
-              seven_day_sonnet: {
-                utilization: 81,
-                resets_at: "2026-04-14T00:00:00Z",
-              },
-            },
-          }),
-          {
-            provider: "claude",
-            plan: "max",
-            windows: [
-              {
-                kind: "primary",
-                usedPercent: 42.5,
-                windowDurationMinutes: 300,
-                resetsAt: "2026-04-10T05:00:00.000Z",
-              },
-              {
-                kind: "weekly",
-                usedPercent: 67,
-                windowDurationMinutes: 10_080,
-                resetsAt: "2026-04-17T00:00:00.000Z",
-              },
-              {
-                kind: "weekly",
-                scope: { type: "feature", id: "oauth_apps", label: "OAuth apps" },
-                usedPercent: 23,
-                windowDurationMinutes: 10_080,
-                resetsAt: "2026-04-16T00:00:00.000Z",
-              },
-              {
-                kind: "weekly",
-                scope: { type: "model", id: "opus", label: "Opus" },
-                usedPercent: 100,
-                windowDurationMinutes: 10_080,
-                resetsAt: "2026-04-15T00:00:00.000Z",
-              },
-              {
-                kind: "weekly",
-                scope: { type: "model", id: "sonnet", label: "Sonnet" },
-                usedPercent: 81,
-                windowDurationMinutes: 10_080,
-                resetsAt: "2026-04-14T00:00:00.000Z",
-              },
-            ],
-          },
-        );
-      });
-
-      it("does not invent subscription limits when Claude says they are unavailable", () => {
-        assert.strictEqual(
-          mapClaudeSubscriptionUsage({
-            subscription_type: null,
-            rate_limits_available: false,
-            rate_limits: null,
-          }),
-          undefined,
-        );
-      });
-
-      it.effect("attaches Claude subscription usage to the provider snapshot", () =>
-        Effect.gen(function* () {
-          const subscriptionUsage = {
-            provider: "claude" as const,
-            plan: "max",
-            windows: [
-              {
-                kind: "primary" as const,
-                usedPercent: 18,
-                windowDurationMinutes: 300,
-                resetsAt: null,
-              },
-            ],
-          };
-          const status = yield* checkClaudeProviderStatus(
-            defaultClaudeSettings,
-            claudeCapabilities({ subscriptionType: "max", subscriptionUsage }),
-          );
-          assert.deepStrictEqual(status.subscriptionUsage, subscriptionUsage);
-        }).pipe(
-          Effect.provide(
-            mockSpawnerLayer((args) => {
-              if (args.join(" ") === "--version") {
-                return { stdout: "2.1.229\n", stderr: "", code: 0 };
-              }
-              throw new Error(`Unexpected args: ${args.join(" ")}`);
-            }),
-          ),
-        ),
-      );
-
       it.effect("returns ready when claude is installed and authenticated", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(
