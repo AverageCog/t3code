@@ -40,6 +40,8 @@ import {
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
 import { sessionModelStateFromInitialize } from "../acp/AcpRuntimeModel.ts";
+import { readGrokUsageLimits } from "./grokUsageLimits.ts";
+import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
 import { discoverGrokSkills } from "../Drivers/GrokSkills.ts";
 
 const GROK_PRESENTATION = {
@@ -308,12 +310,13 @@ const runGrokCliCommand = (
   });
 
 /**
- * Reads model metadata from `initialize._meta.modelState`. This never calls `authenticate`
- * or `session/new`, so it cannot open a browser login or boot the workspace's MCP servers.
+ * Reads models and subscription limits without opening a session or starting MCP servers.
  */
 const discoverGrokModelsViaAcpInitialize = (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv,
+  auth: ServerProviderAuth,
+  checkedAt: string,
 ) =>
   Effect.gen(function* () {
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -324,8 +327,19 @@ const discoverGrokModelsViaAcpInitialize = (
       cwd: process.cwd(),
       clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
     });
-    const initialized = yield* acp.initialize();
-    return buildGrokModelsFromSessionModelState(sessionModelStateFromInitialize(initialized));
+    const initialized = yield* acp
+      .initialize()
+      .pipe(Effect.timeout(GROK_ACP_INITIALIZE_TIMEOUT_MS));
+    const models = buildGrokModelsFromSessionModelState(
+      sessionModelStateFromInitialize(initialized),
+    );
+    const usageLimits =
+      auth.type === "api_key"
+        ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
+        : auth.status === "authenticated"
+          ? yield* readGrokUsageLimits(acp, checkedAt)
+          : undefined;
+    return { models, usageLimits };
   }).pipe(Effect.scoped);
 
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
@@ -461,11 +475,21 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     Effect.orElseSucceed(() => []),
   );
 
-  const acpExit = yield* discoverGrokModelsViaAcpInitialize(grokSettings, environment).pipe(
-    Effect.timeoutOption(GROK_ACP_INITIALIZE_TIMEOUT_MS),
-    Effect.exit,
-  );
-  const acpModels = Exit.isSuccess(acpExit) ? Option.getOrElse(acpExit.value, () => []) : [];
+  const acpExit = yield* discoverGrokModelsViaAcpInitialize(
+    grokSettings,
+    environment,
+    auth,
+    checkedAt,
+  ).pipe(Effect.timeoutOption(30_000), Effect.exit);
+  const acpResult = Exit.isSuccess(acpExit) ? Option.getOrUndefined(acpExit.value) : undefined;
+  const acpModels = acpResult?.models ?? [];
+  const usageLimits =
+    acpResult?.usageLimits ??
+    makeUnavailableUsageLimits({
+      checkedAt,
+      reason: auth.type === "api_key" ? "unsupported" : "probeFailed",
+      message: "Could not read Grok subscription limits. Check your Grok CLI login and version.",
+    });
   const acpFailed = Exit.isFailure(acpExit) || Option.isNone(acpExit.value);
   if (acpFailed) {
     yield* Effect.logWarning("Grok ACP initialize probe failed or timed out.", {
@@ -506,6 +530,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     probe: {
       installed: true,
       version,
+      usageLimits,
       // A failed metadata probe degrades the model picker, it does not make chats fail.
       status: acpFailed ? "warning" : "ready",
       auth,

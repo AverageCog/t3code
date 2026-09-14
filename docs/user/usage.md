@@ -46,7 +46,7 @@ the dialog.
 ## Track subscription limits
 
 **Usage → Limits** pools every subscription account it can see per provider, so with several Codex
-or Claude accounts across your environments and hubs you read one number per window rather than a
+Claude, or Grok accounts across your environments and hubs you read one number per window rather than a
 list. Each window card shows how much of the pool is left and a bar with one segment per account,
 kept in the same column across windows. Accounts are ordered by their 5-hour reset, soonest
 first, or by the first available window when no account reports a 5-hour limit. A gap means the
@@ -61,6 +61,10 @@ The same account signed in on more than one environment, or reported by a hub as
 Filter with the environment dropdown to see what a single machine has.
 
 If a window looks stale, refresh Limits to re-check every provider and hub.
+
+On web and desktop, hover over the sidebar's Usage icon to check subscription limits without
+leaving your conversation. Grok limits use your Grok CLI login and show the included weekly or
+monthly allowance reported by Grok.
 
 Pick `/usage-limits` from the composer's command menu, or send it as a message, to check the
 current model's limits without leaving the conversation. The result opens above the composer and

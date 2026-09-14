@@ -31,6 +31,7 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
+import { UsageSubscriptionPeek } from "./UsageSubscriptionPeek";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 
@@ -109,10 +110,12 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
 function SidebarUtilityItem({
   icon,
   label,
+  tooltip,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
+  tooltip?: ReactNode;
   onClick: () => void;
 }) {
   return (
@@ -125,7 +128,7 @@ function SidebarUtilityItem({
             </SidebarMenuButton>
           }
         />
-        <TooltipPopup side="top">{label}</TooltipPopup>
+        <TooltipPopup side="top">{tooltip ?? label}</TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>
   );
@@ -212,6 +215,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           <SidebarUtilityItem
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"
+            tooltip={<UsageSubscriptionPeek />}
             onClick={handleUsageClick}
           />
         </>
