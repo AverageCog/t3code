@@ -28,12 +28,20 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
+import {
+  inspectMacAppSignature,
+  resolveDownloadedMacUpdateZip,
+  resolveMacAppBundlePath,
+  resolveMacUpdaterCacheDir,
+  spawnUnsignedMacInstaller,
+} from "./unsignedMacInstall.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -283,6 +291,7 @@ export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const electronApp = yield* Effect.serviceOption(ElectronApp.ElectronApp);
 
   const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
@@ -578,6 +587,37 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  /**
+   * Ad-hoc signed Mac builds cannot use Squirrel.Mac: it quits the app without
+   * swapping the bundle, so Restart to update never relaunches and the old
+   * version keeps offering the same update. Replaces the bundle from the
+   * downloaded zip instead and reports whether it took over the install.
+   */
+  const installUnsignedMacUpdate = Effect.gen(function* () {
+    if (environment.platform !== "darwin" || Option.isNone(electronApp)) return false;
+    const bundlePath = resolveMacAppBundlePath(environment.appPath);
+    if (!bundlePath || inspectMacAppSignature(bundlePath) !== "adhoc") return false;
+    const appUpdateYml = Option.getOrUndefined(yield* Ref.get(appUpdateYmlConfigRef));
+    const cacheDir = resolveMacUpdaterCacheDir(
+      environment.homeDirectory,
+      appUpdateYml?.updaterCacheDirName ?? "t3code-updater",
+    );
+    const zipPath = resolveDownloadedMacUpdateZip(cacheDir);
+    if (!zipPath) {
+      yield* logUpdaterWarning("unsigned mac update zip was not in the updater cache", {
+        cacheDir,
+      });
+      return false;
+    }
+    yield* logUpdaterInfo("installing unsigned mac update by replacing the app bundle", {
+      bundlePath,
+      zipPath,
+    });
+    spawnUnsignedMacInstaller({ zipPath, destAppPath: bundlePath });
+    yield* electronApp.value.quit;
+    return true;
+  });
+
   const installDownloadedUpdate = (expectedVersion?: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -643,6 +683,9 @@ export const make = Effect.gen(function* () {
             (instance) => instance.stop({ timeout: Duration.seconds(5) }),
             { concurrency: "unbounded" },
           );
+          if (yield* installUnsignedMacUpdate) {
+            return { accepted: true, completed: false, failed: false };
+          }
           yield* electronUpdater.quitAndInstall({
             isSilent: true,
             isForceRunAfter: true,
