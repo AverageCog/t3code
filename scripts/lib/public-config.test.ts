@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("loadRepoEnv", () => {
-  it("does not project cloud configuration for an unconfigured clone", () => {
+  it("does not project cloud configuration when no defaults are checked in", () => {
     const env = loadRepoEnv({ baseEnv: {}, repoRoot: makeTemporaryDirectory() });
 
     expect(env.T3CODE_CLERK_PUBLISHABLE_KEY).toBeUndefined();
@@ -41,8 +41,32 @@ describe("loadRepoEnv", () => {
     expect(env.VITE_RELAY_OTLP_TRACES_TOKEN).toBeUndefined();
   });
 
-  it("applies process, root local, and root precedence in that order", () => {
+  it("projects checked-in example values as build defaults", () => {
     const repoRoot = makeTemporaryDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.example"),
+      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_default\nT3CODE_CLERK_JWT_TEMPLATE=template_default\nT3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_default\nT3CODE_RELAY_URL=https://default.example.test\n",
+    );
+
+    expect(loadRepoEnv({ baseEnv: {}, repoRoot })).toMatchObject({
+      T3CODE_CLERK_PUBLISHABLE_KEY: "pk_default",
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_default",
+      VITE_CLERK_PUBLISHABLE_KEY: "pk_default",
+      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_default",
+      T3CODE_CLERK_JWT_TEMPLATE: "template_default",
+      VITE_CLERK_JWT_TEMPLATE: "template_default",
+      EXPO_PUBLIC_CLERK_JWT_TEMPLATE: "template_default",
+      T3CODE_RELAY_URL: "https://default.example.test",
+      VITE_T3CODE_RELAY_URL: "https://default.example.test",
+    });
+  });
+
+  it("applies process, root local, root, and checked-in default precedence in that order", () => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.example"),
+      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_default\nT3CODE_CLERK_JWT_TEMPLATE=template_default\nT3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_default\nT3CODE_RELAY_URL=https://default.example.test\n",
+    );
     NodeFS.writeFileSync(
       NodePath.join(repoRoot, ".env"),
       "T3CODE_CLERK_PUBLISHABLE_KEY=pk_root\nT3CODE_CLERK_JWT_TEMPLATE=template_root\nT3CODE_CLERK_CLI_OAUTH_CLIENT_ID=oauth_root\nT3CODE_RELAY_URL=https://root.example.test\n",

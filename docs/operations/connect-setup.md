@@ -6,14 +6,12 @@ provisioning instructions.
 
 ## Public application configuration
 
-T3 Connect is disabled in a fresh clone. To build against the production deployment, copy the
-repository-root example:
+T3 Connect is enabled in a fresh clone. The repository-root `.env.example` supplies the production
+public identifiers as checked-in build defaults, so desktop installers built on another machine
+include T3 Connect without an untracked environment file.
 
-```sh
-cp .env.example .env
-```
-
-For another deployment, set these values in the repository-root `.env` or `.env.local`:
+For another deployment, set these values in the process environment or the repository-root `.env`
+or `.env.local`:
 
 ```dotenv
 T3CODE_CLERK_PUBLISHABLE_KEY=<publishable key>
@@ -22,7 +20,7 @@ T3CODE_CLERK_CLI_OAUTH_CLIENT_ID=<public OAuth application client ID>
 T3CODE_RELAY_URL=https://relay.example.com
 ```
 
-Process variables take precedence over `.env.local`, then `.env`. Use these canonical names;
+Process variables take precedence over `.env.local`, then `.env`, then `.env.example`. Use these canonical names;
 the build loader supplies framework-specific aliases. These values are public identifiers.
 `CLERK_SECRET_KEY` belongs only in the relay's secrets, never in client configuration.
 
