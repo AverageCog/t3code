@@ -574,4 +574,9 @@ describe("parseGrokLine", () => {
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
   });
+
+  it("falls back to the outer unix-seconds timestamp when agent time is zero", () => {
+    const [record] = parseGrokLine(turnCompleted({ agentTimestampMs: 0 }));
+    expect(record?.timestampMs).toBe(1_786_372_566_000);
+  });
 });

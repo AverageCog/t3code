@@ -421,7 +421,11 @@ export function parseGrokRecord(parsed: unknown): readonly UsageRecord[] {
   let timestampMs: number | null = null;
   if (typeof meta === "object" && meta !== null) {
     const agentTimestampMs = (meta as Record<string, unknown>)["agentTimestampMs"];
-    if (typeof agentTimestampMs === "number" && Number.isFinite(agentTimestampMs)) {
+    if (
+      typeof agentTimestampMs === "number" &&
+      Number.isFinite(agentTimestampMs) &&
+      agentTimestampMs > 0
+    ) {
       timestampMs = agentTimestampMs;
     }
   }
